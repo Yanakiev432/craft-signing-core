@@ -27,9 +27,17 @@ pub struct Verification {
     pub timestamp: Verdict,
     pub details: Vec<String>,
 }
-pub trait SigningProvider {
+/// The provider hashes the message exactly once and applies algorithm-specific
+/// padding and encoding. Do not supply a prehashed digest.
+pub struct SigningRequest<'a> {
+    pub identity: &'a IdentityRef,
+    pub digest: Digest,
+    pub message: &'a [u8],
+}
+pub trait SigningProvider: Send + Sync {
+    fn kind(&self) -> Provider;
     fn list_identities(&self) -> Result<Vec<IdentityRef>, String>;
-    fn sign_digest(&self, id: &IdentityRef, algorithm: Digest, digest: &[u8]) -> Result<Vec<u8>, String>;
+    fn sign(&self, request: SigningRequest<'_>) -> Result<Vec<u8>, String>;
 }
 pub trait DocumentSignatureAdapter {
     fn format(&self) -> &'static str;
@@ -45,7 +53,26 @@ mod tests {
             assert!(IdentityRef::parse(bad).is_err());
         }
     }
-    #[test] fn trust_is_independent() {
+    struct MockProvider;
+    impl SigningProvider for MockProvider {
+        fn kind(&self) -> Provider { Provider::WindowsCng }
+        fn list_identities(&self) -> Result<Vec<IdentityRef>, String> {
+            Ok(vec![IdentityRef::parse("windows:test").map_err(str::to_owned)?])
+        }
+        fn sign(&self, request: SigningRequest<'_>) -> Result<Vec<u8>, String> {
+            if request.identity.provider != self.kind() { return Err("provider mismatch".into()); }
+            if request.identity.id != "test" { return Err("unknown identity".into()); }
+            if request.message != b"message" { return Err("unexpected message".into()); }
+            Ok(vec![1,2,3])
+        }
+    }
+    #[test] fn mock_provider_routing() {
+        let provider=MockProvider;
+        let identity=provider.list_identities().unwrap().remove(0);
+        assert_eq!(provider.sign(SigningRequest { identity:&identity, digest:Digest::Sha256, message:b"message" }).unwrap(), vec![1,2,3]);
+        let wrong=IdentityRef::parse("pkcs11:test").unwrap();
+        assert!(provider.sign(SigningRequest { identity:&wrong, digest:Digest::Sha256, message:b"message" }).is_err());
+    }    #[test] fn trust_is_independent() {
         let result=Verification { integrity:Verdict::Valid, chain_trust:Verdict::Unknown,
             revocation:Verdict::Unknown,timestamp:Verdict::Unknown,details:vec![] };
         assert_ne!(result.integrity,result.chain_trust);
