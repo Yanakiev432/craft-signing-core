@@ -81,3 +81,5 @@ mod tests {
 }
 #[cfg(target_os = "windows")]
 pub mod windows_trust;
+#[cfg(target_os = "windows")]
+pub mod windows_cng;

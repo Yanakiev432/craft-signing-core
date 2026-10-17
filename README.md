@@ -33,3 +33,9 @@ MIT OR Apache-2.0. Architecture inspired by [PdfCraft](https://github.com/storyt
 ## Windows trust-store adapter (experimental)
 
 `windows_trust::trusted_root_der()` reads the existing Windows CurrentUser and LocalMachine Root stores without modifying them. This read-only extraction is useful to a PdfCraft-style verifier but does **not** replace Windows chain-policy evaluation, revocation/Disallowed checks or eIDAS qualification. Hardware signing remains in the original PdfCraft implementation; it is **not yet extracted** into this crate.
+
+## Windows CNG RSA adapter
+
+On Windows, `windows_cng::WindowsCngProvider` enumerates CurrentUser Personal certificates and selects an identity by the SHA-256 hash of its DER certificate. `sign` acquires the Windows key **interactively**, hashes the supplied message, and requests RSA PKCS#1 v1.5 signing from CNG. It does not export the key.
+
+**Important:** This implementation is compile-checked, not hardware-validated. Do not treat its presence as a qualified-signature or interoperability certification. It does not implement RSA-PSS, ECDSA signature conversion, PKCS#11 or OOXML signatures. No signing operation was run during extraction.
