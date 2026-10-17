@@ -7,3 +7,6 @@ description = "Host-neutral signing provider contracts for Craft apps"
 
 [lib]
 path = "src/lib.rs"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+rustls-cng = { version = "0.7.1", default-features = false }

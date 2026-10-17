@@ -72,9 +72,12 @@ mod tests {
         assert_eq!(provider.sign(SigningRequest { identity:&identity, digest:Digest::Sha256, message:b"message" }).unwrap(), vec![1,2,3]);
         let wrong=IdentityRef::parse("pkcs11:test").unwrap();
         assert!(provider.sign(SigningRequest { identity:&wrong, digest:Digest::Sha256, message:b"message" }).is_err());
-    }    #[test] fn trust_is_independent() {
+    }
+    #[test] fn trust_is_independent() {
         let result=Verification { integrity:Verdict::Valid, chain_trust:Verdict::Unknown,
             revocation:Verdict::Unknown,timestamp:Verdict::Unknown,details:vec![] };
         assert_ne!(result.integrity,result.chain_trust);
     }
 }
+#[cfg(target_os = "windows")]
+pub mod windows_trust;

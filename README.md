@@ -29,3 +29,7 @@ No PINs, private keys, signed personal documents or certificates are committed.
 ## License and attribution
 
 MIT OR Apache-2.0. Architecture inspired by [PdfCraft](https://github.com/storytold/pdfcraft) (MIT OR Apache-2.0). No upstream source files copied here.
+
+## Windows trust-store adapter (experimental)
+
+`windows_trust::trusted_root_der()` reads the existing Windows CurrentUser and LocalMachine Root stores without modifying them. This read-only extraction is useful to a PdfCraft-style verifier but does **not** replace Windows chain-policy evaluation, revocation/Disallowed checks or eIDAS qualification. Hardware signing remains in the original PdfCraft implementation; it is **not yet extracted** into this crate.
