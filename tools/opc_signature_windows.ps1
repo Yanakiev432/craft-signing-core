@@ -157,8 +157,20 @@ try {
     try { $state = Read-SignatureState -Package $signedPackage -Ext $ext }
     finally { $signedPackage.Close() }
     if (-not $state.integrity_pass) { throw ('Signed document failed readback integrity: ' + ($state | ConvertTo-Json -Compress -Depth 5)) }
+    # Hash the verified staging file before publishing the destination.
+    # Windows PowerShell on a minimal runner might not expose Get-FileHash.
+    # Using .NET avoids a cmdlet dependency and leaves the output absent if
+    # hashing fails.
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    $inputStream = [System.IO.File]::OpenRead($stage)
+    try {
+        $digest = [BitConverter]::ToString($sha.ComputeHash($inputStream)).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $inputStream.Dispose()
+        $sha.Dispose()
+    }
     [IO.File]::Move($stage,$outPath)
-    $state | Add-Member -NotePropertyName 'file_sha256' -NotePropertyValue ((Get-FileHash -LiteralPath $outPath -Algorithm SHA256).Hash.ToLowerInvariant())
+    $state | Add-Member -NotePropertyName 'file_sha256' -NotePropertyValue $digest
     $state | Add-Member -NotePropertyName 'signed_output' -NotePropertyValue $outPath
     $state | ConvertTo-Json -Depth 6 -Compress
 } finally {
