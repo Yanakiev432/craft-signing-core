@@ -97,3 +97,6 @@ finally {
     if($rsa) { $rsa.Dispose() }
     Write-Output 'IN_MEMORY_TEST_IDENTITY_DISPOSED=true'
 }
+# Both negative controls deliberately set exit=1. Normalize *only after* the
+# complete success path so callers and GitHub Actions receive unambiguous PASS.
+$global:LASTEXITCODE = 0
