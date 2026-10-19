@@ -1,11 +1,11 @@
-//! Host-neutral format routing shared by PdfCraft, WordCraft and CellCraft.
+//! Host-neutral format routing shared by PdfCraft, WordCraft and GridCraft.
 //! Does not equate a generic CMS signature to a valid OOXML package signature.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DocumentFamily {
     Pdf,
     WordOoxml,
-    CellOoxml,
+    SpreadsheetOoxml,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,7 +26,7 @@ impl FormatBinding {
             (document, signature),
             (DocumentFamily::Pdf, SignatureStandard::Pades)
                 | (DocumentFamily::WordOoxml, SignatureStandard::OoxmlOpcXmldsig)
-                | (DocumentFamily::CellOoxml, SignatureStandard::OoxmlOpcXmldsig)
+                | (DocumentFamily::SpreadsheetOoxml, SignatureStandard::OoxmlOpcXmldsig)
         );
         if !valid {
             return Err("signature standard is incompatible with this document format");
@@ -38,7 +38,7 @@ impl FormatBinding {
         match self.document {
             DocumentFamily::Pdf => "pdf",
             DocumentFamily::WordOoxml => "docx",
-            DocumentFamily::CellOoxml => "xlsx",
+            DocumentFamily::SpreadsheetOoxml => "xlsx",
         }
     }
 
@@ -49,7 +49,7 @@ impl FormatBinding {
     pub fn preflight_container(&self, bytes: &[u8]) -> Result<(), &'static str> {
         let valid = match self.document {
             DocumentFamily::Pdf => bytes.starts_with(b"%PDF-"),
-            DocumentFamily::WordOoxml | DocumentFamily::CellOoxml => bytes.starts_with(b"PK\x03\x04"),
+            DocumentFamily::WordOoxml | DocumentFamily::SpreadsheetOoxml => bytes.starts_with(b"PK\x03\x04"),
         };
         if !valid {
             return Err("document container magic does not match selected document family");
@@ -101,14 +101,14 @@ mod tests {
     fn rejects_cross_format_signatures() {
         assert!(FormatBinding::new(DocumentFamily::Pdf, SignatureStandard::OoxmlOpcXmldsig).is_err());
         assert!(FormatBinding::new(DocumentFamily::WordOoxml, SignatureStandard::Pades).is_err());
-        assert!(FormatBinding::new(DocumentFamily::CellOoxml, SignatureStandard::Pades).is_err());
+        assert!(FormatBinding::new(DocumentFamily::SpreadsheetOoxml, SignatureStandard::Pades).is_err());
     }
 
     #[test]
     fn accepts_three_apps_but_not_zip_as_document_proof() {
         let pdf = FormatBinding::new(DocumentFamily::Pdf, SignatureStandard::Pades).unwrap();
         let word = FormatBinding::new(DocumentFamily::WordOoxml, SignatureStandard::OoxmlOpcXmldsig).unwrap();
-        let cell = FormatBinding::new(DocumentFamily::CellOoxml, SignatureStandard::OoxmlOpcXmldsig).unwrap();
+        let cell = FormatBinding::new(DocumentFamily::SpreadsheetOoxml, SignatureStandard::OoxmlOpcXmldsig).unwrap();
         assert_eq!(pdf.extension(), "pdf");
         assert_eq!(word.extension(), "docx");
         assert_eq!(cell.extension(), "xlsx");
