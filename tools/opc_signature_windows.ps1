@@ -110,7 +110,22 @@ $outPath = [IO.Path]::GetFullPath($OutputFile)
 if ([IO.Path]::GetExtension($outPath).ToLowerInvariant() -ne $ext) { throw 'Source and output document extensions must match' }
 if ([StringComparer]::OrdinalIgnoreCase.Equals($inputPath,$outPath)) { throw 'Refusing in-place modification of original document' }
 if (Test-Path -LiteralPath $outPath) { throw 'Refusing to overwrite an existing output file' }
-$cert = if ($null -ne $DevelopmentCertificate) { $DevelopmentCertificate } else { Get-Item -LiteralPath "Cert:\CurrentUser\My\$CertificateThumbprint" -ErrorAction Stop }
+$cert = $DevelopmentCertificate
+if ($null -eq $cert) {
+    # GitHub Windows runners and hardened hosts may not mount the Cert: PSDrive.
+    # Open only the Windows CurrentUser/My X509Store through .NET instead.
+    $store = [System.Security.Cryptography.X509Certificates.X509Store]::new(
+        [System.Security.Cryptography.X509Certificates.StoreName]::My,
+        [System.Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser)
+    try {
+        $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadOnly)
+        $matches = @($store.Certificates | Where-Object { $_.Thumbprint -eq $CertificateThumbprint })
+        if ($matches.Count -ne 1) { throw 'Selected certificate not found uniquely in Windows CurrentUser/My' }
+        # Clone the certificate context so it survives store.Close() without
+        # exporting or loading any private-key bytes into this process.
+        $cert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($matches[0])
+    } finally { $store.Close() }
+}
 if (-not $cert.HasPrivateKey) { throw 'Selected certificate has no signing key' }
 $now = [DateTime]::UtcNow
 if ($cert.NotBefore.ToUniversalTime() -gt $now -or $cert.NotAfter.ToUniversalTime() -lt $now) {
