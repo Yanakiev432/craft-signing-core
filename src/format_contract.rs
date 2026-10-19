@@ -21,17 +21,29 @@ pub struct FormatBinding {
 }
 
 impl FormatBinding {
-    pub fn new(document: DocumentFamily, signature: SignatureStandard) -> Result<Self, &'static str> {
+    pub fn new(
+        document: DocumentFamily,
+        signature: SignatureStandard,
+    ) -> Result<Self, &'static str> {
         let valid = matches!(
             (document, signature),
             (DocumentFamily::Pdf, SignatureStandard::Pades)
-                | (DocumentFamily::WordOoxml, SignatureStandard::OoxmlOpcXmldsig)
-                | (DocumentFamily::SpreadsheetOoxml, SignatureStandard::OoxmlOpcXmldsig)
+                | (
+                    DocumentFamily::WordOoxml,
+                    SignatureStandard::OoxmlOpcXmldsig
+                )
+                | (
+                    DocumentFamily::SpreadsheetOoxml,
+                    SignatureStandard::OoxmlOpcXmldsig
+                )
         );
         if !valid {
             return Err("signature standard is incompatible with this document format");
         }
-        Ok(Self { document, signature })
+        Ok(Self {
+            document,
+            signature,
+        })
     }
 
     pub fn extension(&self) -> &'static str {
@@ -49,7 +61,9 @@ impl FormatBinding {
     pub fn preflight_container(&self, bytes: &[u8]) -> Result<(), &'static str> {
         let valid = match self.document {
             DocumentFamily::Pdf => bytes.starts_with(b"%PDF-"),
-            DocumentFamily::WordOoxml | DocumentFamily::SpreadsheetOoxml => bytes.starts_with(b"PK\x03\x04"),
+            DocumentFamily::WordOoxml | DocumentFamily::SpreadsheetOoxml => {
+                bytes.starts_with(b"PK\x03\x04")
+            }
         };
         if !valid {
             return Err("document container magic does not match selected document family");
@@ -99,16 +113,28 @@ mod tests {
 
     #[test]
     fn rejects_cross_format_signatures() {
-        assert!(FormatBinding::new(DocumentFamily::Pdf, SignatureStandard::OoxmlOpcXmldsig).is_err());
+        assert!(
+            FormatBinding::new(DocumentFamily::Pdf, SignatureStandard::OoxmlOpcXmldsig).is_err()
+        );
         assert!(FormatBinding::new(DocumentFamily::WordOoxml, SignatureStandard::Pades).is_err());
-        assert!(FormatBinding::new(DocumentFamily::SpreadsheetOoxml, SignatureStandard::Pades).is_err());
+        assert!(
+            FormatBinding::new(DocumentFamily::SpreadsheetOoxml, SignatureStandard::Pades).is_err()
+        );
     }
 
     #[test]
     fn accepts_three_apps_but_not_zip_as_document_proof() {
         let pdf = FormatBinding::new(DocumentFamily::Pdf, SignatureStandard::Pades).unwrap();
-        let word = FormatBinding::new(DocumentFamily::WordOoxml, SignatureStandard::OoxmlOpcXmldsig).unwrap();
-        let cell = FormatBinding::new(DocumentFamily::SpreadsheetOoxml, SignatureStandard::OoxmlOpcXmldsig).unwrap();
+        let word = FormatBinding::new(
+            DocumentFamily::WordOoxml,
+            SignatureStandard::OoxmlOpcXmldsig,
+        )
+        .unwrap();
+        let cell = FormatBinding::new(
+            DocumentFamily::SpreadsheetOoxml,
+            SignatureStandard::OoxmlOpcXmldsig,
+        )
+        .unwrap();
         assert_eq!(pdf.extension(), "pdf");
         assert_eq!(word.extension(), "docx");
         assert_eq!(cell.extension(), "xlsx");
@@ -126,7 +152,13 @@ mod tests {
         assert!(PadesBaseline::B < PadesBaseline::T);
         assert!(PadesBaseline::T < PadesBaseline::Lt);
         assert!(PadesBaseline::Lt < PadesBaseline::Lta);
-        assert_eq!(PadesBaseline::from_independent_dss_name("PAdES-BASELINE-LTA"), Some(PadesBaseline::Lta));
-        assert_eq!(PadesBaseline::from_independent_dss_name("PAdES-BASELINE-Z"), None);
+        assert_eq!(
+            PadesBaseline::from_independent_dss_name("PAdES-BASELINE-LTA"),
+            Some(PadesBaseline::Lta)
+        );
+        assert_eq!(
+            PadesBaseline::from_independent_dss_name("PAdES-BASELINE-Z"),
+            None
+        );
     }
 }
