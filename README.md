@@ -22,6 +22,14 @@ PdfCraft 0.8.0 currently implements B-Trust USB/CNG signing and PDF PAdES valida
 
 No PINs, private keys, signed personal documents or certificates are committed.
 
+## Cross-application format contracts (2026-10-19)
+
+The tested `format_contract` module now provides one provider-facing namespace for three **different document formats**: PdfCraft (`.pdf` / PAdES), WordCraft (`.docx` / OOXML OPC XMLDSig), and CellCraft (`.xlsx` / OOXML OPC XMLDSig). It rejects crossing a PDF signature serializer with an OOXML package, distinguishes the PAdES B/T/LT/LTA profile names, and performs an initial container-magic check.
+
+**Release boundary:** The OOXML preflight only verifies the ZIP container marker. It is **not** an OOXML package parser, not a signed package, not a document validator and not a QES claim. Production WordCraft/CellCraft integration must separately implement and test OPC signature origin/relationships, content types, digest transforms, XML canonicalization, package coverage, Office interoperability and independent validation. A detached PDF CMS signature must not be inserted into an Office ZIP and advertised as a valid Office signature.
+
+On Ubuntu WSL with no GPU and no private keys: `cargo test --offline` gives 6 passed, 0 failed. The project does not process PIN and never exports a physical token key.
+
 ## Test
 
 `cargo test`

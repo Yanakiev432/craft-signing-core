@@ -1,4 +1,6 @@
 //! Reusable contracts; production cryptography remains in format/provider adapters.
+//! OOXML signatures use OPC/XMLDSig, not PDF PAdES/CMS serialization.
+pub mod format_contract;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Provider { WindowsCng, MacosKeychain, Pkcs11, Pkcs12, Remote }
 #[derive(Clone, Debug, PartialEq, Eq)]
