@@ -38,7 +38,7 @@ if($Mode -eq 'Sign'){
  if($OutputPath -or $CertificateThumbprint){throw 'PDF_VERIFY_ARGUMENTS_INVALID'}
  $steps=@(
   @{tool='doc_open';args=@{path=$inputFull}},
-  @{tool='signatures_list';args=@{doc=1}}
+  @{tool='sign_list';args=@{doc=1}}
  )
 }
 $temporary=Join-Path ([IO.Path]::GetTempPath()) ('craft-pdf-'+[Guid]::NewGuid().ToString('N')+'.json')
