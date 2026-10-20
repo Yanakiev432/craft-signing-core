@@ -71,7 +71,7 @@ if ($Mode -eq 'list') {
     })
     $row|ConvertTo-Json -Compress -Depth 5
   } finally {$store.Close()}
-  exit 0
+  return
 }
 if (-not $InputFile) { throw 'INPUT_FILE_REQUIRED' }
 $source=Refuse-Reparse $InputFile
@@ -126,7 +126,7 @@ if ($Mode -eq 'sign') {
   Result @{schema='craft.file-digest-signature-result.v1';mode='sign';
     source=$source;envelope=$sigPath;file_sha256=$before.hash;file_bytes=$before.size;
     cms_signature_created=$true;independently_verified=$false}
-  exit 0
+  return
 }
 if ($CertificateThumbprint -or $DevelopmentCertificate) {throw 'VERIFY_MODE_MUST_NOT_SELECT_PRIVATE_KEY'}
 if (-not [IO.File]::Exists($sigPath)) {throw 'SIGNATURE_ENVELOPE_NOT_FOUND'}
