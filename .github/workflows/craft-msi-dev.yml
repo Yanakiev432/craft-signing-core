@@ -26,7 +26,7 @@ jobs:
           New-Item -ItemType Directory -Force dist | Out-Null
           Push-Location tools
           try {
-            wix build ../packaging/CraftSigningExtension.wxs -arch x64 -o ../dist/CraftSigningExtension-0.1.1-UNSIGNED.msi
+            wix build ../packaging/CraftSigningExtension.wxs -arch x64 -o ../dist/CraftSigningExtension-0.1.1-UNSIGNED.msi -acceptEula wix7
             if ($LASTEXITCODE -ne 0) { throw 'WIX_BUILD_FAILED' }
           } finally { Pop-Location }
           Get-FileHash dist/CraftSigningExtension-0.1.1-UNSIGNED.msi -Algorithm SHA256 | Format-List
