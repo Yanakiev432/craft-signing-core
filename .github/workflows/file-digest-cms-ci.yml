@@ -1,0 +1,47 @@
+name: Universal Craft signed-file digest envelope
+on:
+  pull_request:
+    paths:
+      - 'tools/craft_file_digest_cms.ps1'
+      - 'tools/test_craft_file_digest_cms.ps1'
+      - '.github/workflows/file-digest-cms-ci.yml'
+  push:
+    branches:
+      - feature/universal-file-hash-cms-sidecar-20261020
+    paths:
+      - 'tools/craft_file_digest_cms.ps1'
+      - 'tools/test_craft_file_digest_cms.ps1'
+      - '.github/workflows/file-digest-cms-ci.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  synthetic-file-manifest-sign-verify:
+    runs-on: windows-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Parse PowerShell 7 signer and test harness
+        shell: pwsh
+        run: |
+          foreach ($file in @('tools/craft_file_digest_cms.ps1','tools/test_craft_file_digest_cms.ps1')){
+            $parseErrors=$null
+            [Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD $file),[ref]$null,[ref]$parseErrors)|Out-Null
+            if ($parseErrors){throw ('SYNTAX_ERROR: '+$file+': '+($parseErrors|Out-String))}
+          }
+          Write-Host 'POWERSHELL_CMS_SYNTAX=PASS'
+      - name: Sign and verify disposable SVG and 8 MiB payload; reject tampering and overwrite
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          & ./tools/test_craft_file_digest_cms.ps1
+      - name: Assert no false eIDAS or format-native qualification
+        shell: pwsh
+        run: |
+          $source=Get-Content tools/craft_file_digest_cms.ps1 -Raw
+          foreach($marker in @("'NOT_CHECKED'",'qualified_release_ready','$false','hash-manifest-not-native-file-signature')){
+            if(-not $source.Contains($marker)){throw ('Unqualified status marker missing: '+$marker)}
+          }
+          Write-Host 'FILE_MANIFEST_SIGNING_IS_NOT_QUALIFIED_EIDAS=PASS'
