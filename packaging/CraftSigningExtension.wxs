@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="Craft Signing Extension" Manufacturer="Craft Open Source" Version="0.1.0" UpgradeCode="CA0F22BB-EDC3-4B24-B037-0E53EE65F081" Scope="perUser">
+    <MajorUpgrade DowngradeErrorMessage="A newer Craft Signing Extension is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="CraftPrograms" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="CraftSigningExtension">
+          <Component Id="CoreScripts" Guid="*">
+            <File Id="CoreEntry" Source="craft_signing_extension.ps1" KeyPath="yes" />
+            <File Source="craft_signing_interactive.ps1" />
+            <File Source="office_opc_sign.ps1" />
+            <File Source="opc_signature_windows.ps1" />
+            <File Source="pdfcraft_pades_adapter.ps1" />
+          </Component>
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+    <Feature Id="MainFeature" Title="Craft Signing Extension" Level="1">
+      <ComponentRef Id="CoreScripts" />
+    </Feature>
+  </Package>
+</Wix>
