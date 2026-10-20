@@ -2,7 +2,7 @@
 
 **Status: v0.1 API contracts, not a standalone production signer.**
 
-Shared Rust interfaces for digital-signature providers in PdfCraft, WordCraft and CellCraft.
+Shared Rust interfaces for digital-signature providers in PdfCraft, WordCraft and GridCraft.
 
 - Providers: Windows CNG (including USB tokens), macOS Keychain, PKCS#11, PKCS#12, remote.
 - Separates signing identity/key access from document format.
@@ -17,10 +17,18 @@ PdfCraft 0.8.0 currently implements B-Trust USB/CNG signing and PDF PAdES valida
 
 1. Extract Windows CNG and PKCS#11 provider implementations and tests from the PdfCraft integration.
 2. Implement PdfCraft PAdES adapter and end-to-end signing/verification tests.
-3. Implement separate WordCraft/CellCraft OOXML/XMLDSig adapters.
+3. Implement separate WordCraft/GridCraft OOXML/XMLDSig adapters.
 4. Verify certificate policy, revocation and qualified-signature requirements; never claim eIDAS QES from chain trust alone.
 
 No PINs, private keys, signed personal documents or certificates are committed.
+
+## Cross-application format contracts (2026-10-19)
+
+The tested `format_contract` module now provides one provider-facing namespace for three **different document formats**: PdfCraft (`.pdf` / PAdES), WordCraft (`.docx` / OOXML OPC XMLDSig), and GridCraft (`.xlsx` / OOXML OPC XMLDSig). It rejects crossing a PDF signature serializer with an OOXML package, distinguishes the PAdES B/T/LT/LTA profile names, and performs an initial container-magic check.
+
+**Release boundary:** The OOXML preflight only verifies the ZIP container marker. It is **not** an OOXML package parser, not a signed package, not a document validator and not a QES claim. Production WordCraft/GridCraft integration must separately implement and test OPC signature origin/relationships, content types, digest transforms, XML canonicalization, package coverage, Office interoperability and independent validation. A detached PDF CMS signature must not be inserted into an Office ZIP and advertised as a valid Office signature.
+
+On Ubuntu WSL with no GPU and no private keys: `cargo test --offline` gives 6 passed, 0 failed. The project does not process PIN and never exports a physical token key.
 
 ## Test
 

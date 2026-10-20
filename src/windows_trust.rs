@@ -16,7 +16,8 @@ pub fn trusted_root_der() -> Result<Vec<RootCertificate>, String> {
     for kind in [CertStoreType::CurrentUser, CertStoreType::LocalMachine] {
         let store = CertStore::open(kind, "Root")
             .map_err(|e| format!("Windows Root store open failed: {e:?}"))?;
-        let contexts = store.find_all()
+        let contexts = store
+            .find_all()
             .map_err(|e| format!("Windows Root store read failed: {e:?}"))?;
         for context in contexts {
             let der = context.as_der().to_vec();

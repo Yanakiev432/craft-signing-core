@@ -1,0 +1,69 @@
+name: Shared signing core acceptance
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'tools/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/signing-core-ci.yml'
+  push:
+    branches:
+      - feature/shared-signing-windows-opc-ci-20261020
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  rust-contracts:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      - name: Rust source formatting
+        run: cargo fmt --all -- --check
+      - name: Run shared signing contracts and test vectors
+        run: cargo test --all-targets
+      - name: Ensure production hardware QES is not inferred
+        shell: bash
+        run: |
+          echo 'SHARED_CONTRACT_TEST=PASS; HARDWARE_BTRUST=NOT_TESTED; QES_LEGAL_STATUS=NOT_VERIFIED'
+  windows-opc-xmlsig:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Validate PowerShell parser for Windows reference implementation
+        shell: pwsh
+        run: |
+          foreach ($file in @('tools/opc_signature_windows.ps1','tools/test_opc_signature_windows.ps1')) {
+            $errors = $null
+            [Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD $file), [ref]$null, [ref]$errors) | Out-Null
+            if ($errors) { throw ('PowerShell syntax error in ' + $file + ': ' + ($errors | Out-String)) }
+          }
+          Write-Host 'POWERSHELL_SYNTAX=PASS'
+      - name: Sign and verify synthetic DOCX and XLSX, reject modified and added parts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dir = Join-Path $env:RUNNER_TEMP ('opc-e2e-' + [Guid]::NewGuid().ToString('N'))
+          $result = (& ./tools/test_opc_signature_windows.ps1 -ArtifactDirectory $dir) | Out-String
+          if ($LASTEXITCODE -ne 0) { throw 'Shared OPC test harness failed' }
+          if (-not $result.Contains('OPC_SIGN_VERIFY_TAMPER=PASS')) { throw 'OPC positive and negative acceptance missing' }
+          if (-not $result.Contains('IN_MEMORY_TEST_IDENTITY_DISPOSED=true')) { throw 'Fixture lifetime acceptance missing' }
+          if (($result | Select-String -Pattern 'OPC_TEST_PASS family=(docx|xlsx)' -AllMatches).Matches.Count -ne 2) {
+            throw 'Expected exact DOCX and XLSX acceptance'
+          }
+          Write-Host 'DOCX_XLSX_XMLDSIG_INTEGRITY=PASS'
+          Write-Host 'BTRUST_USB=NOT_USED; QUALIFIED_EIDAS_STATUS=NOT_CHECKED; MS_OFFICE_UI=NOT_TESTED'
