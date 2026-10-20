@@ -1,0 +1,46 @@
+name: Craft unsigned MSI development build
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'packaging/**'
+      - 'tools/**'
+      - '.github/workflows/craft-msi-dev.yml'
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Install WiX v7
+        shell: pwsh
+        run: dotnet tool install --global wix --version 7.0.0
+      - name: Build unsigned MSI
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Push-Location tools
+          try {
+            wix build ../packaging/CraftSigningExtension.wxs -arch x64 -o ../dist/CraftSigningExtension-0.1.1-UNSIGNED.msi
+            if ($LASTEXITCODE -ne 0) { throw 'WIX_BUILD_FAILED' }
+          } finally { Pop-Location }
+          Get-FileHash dist/CraftSigningExtension-0.1.1-UNSIGNED.msi -Algorithm SHA256 | Format-List
+      - name: Enforce unsigned development status
+        shell: pwsh
+        run: |
+          $path = 'dist/CraftSigningExtension-0.1.1-UNSIGNED.msi'
+          $sig = (Get-AuthenticodeSignature $path).Status
+          if ($sig -ne 'NotSigned') { throw ('UNEXPECTED_SIGNATURE_STATUS: ' + $sig) }
+          Write-Host 'UNSIGNED_DEV=PASS; PRODUCTION_RELEASE=NO_GO'
+      - name: Upload development MSI only
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: craft-signing-extension-0.1.1-UNSIGNED-DEV
+          path: dist/CraftSigningExtension-0.1.1-UNSIGNED.msi
+          if-no-files-found: error
+          retention-days: 7
