@@ -1,7 +1,7 @@
 #requires -Version 5.1
 <#
 .SYNOPSIS
-  Opt-in OPC/XMLDSig signing or integrity verification for DOCX and XLSX.
+  Opt-in OPC/XMLDSig signing or integrity verification for DOCX, XLSX and PPTX.
 .DESCRIPTION
   WindowsBase PackageDigitalSignatureManager reference implementation.
   Uses an explicitly selected CurrentUser\\My certificate; private key
@@ -41,14 +41,15 @@ function Inspect-OfficePackage([System.IO.Packaging.Package]$Package, [string]$E
             if ($Package.PartExists($resolved)) {
                 $name = $resolved.OriginalString
                 if (($Ext -eq '.docx' -and $name.StartsWith('/word/')) -or
-                    ($Ext -eq '.xlsx' -and $name.StartsWith('/xl/'))) {
+                    ($Ext -eq '.xlsx' -and $name.StartsWith('/xl/')) -or
+                    ($Ext -eq '.pptx' -and $name.StartsWith('/ppt/'))) {
                     $mainUri = $resolved
                     $found = $true
                 }
             }
         }
     }
-    if (-not $found) { throw 'Invalid DOCX/XLSX: missing valid internal officeDocument relationship/main part' }
+    if (-not $found) { throw 'Invalid DOCX/XLSX/PPTX: missing valid internal officeDocument relationship/main part' }
     return $mainUri.OriginalString
 }
 
@@ -92,7 +93,7 @@ function Read-SignatureState([System.IO.Packaging.Package]$Package, [string]$Ext
 if (-not (Test-Path -LiteralPath $InputFile -PathType Leaf)) { throw 'Input file does not exist' }
 $inputPath = [IO.Path]::GetFullPath($InputFile)
 $ext = [IO.Path]::GetExtension($inputPath).ToLowerInvariant()
-if ($ext -notin @('.docx','.xlsx')) { throw 'Only OPC DOCX and XLSX are supported' }
+if ($ext -notin @('.docx','.xlsx','.pptx')) { throw 'Only OPC DOCX XLSX and PPTX are supported' }
 if ($Mode -eq 'verify') {
     if ($OutputFile -or $CertificateThumbprint -or $DevelopmentCertificate) { throw 'Verify mode accepts no signing/output parameters' }
     $package = [System.IO.Packaging.Package]::Open($inputPath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
