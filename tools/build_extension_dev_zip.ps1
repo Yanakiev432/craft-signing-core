@@ -3,7 +3,7 @@
 param([Parameter(Mandatory)][string]$OutputDirectory)
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
-$names=@('craft_signing_extension.ps1','craft_signing_interactive.ps1','office_opc_sign.ps1','install_craft_signing_extension_v2.ps1')
+$names=@('craft_signing_extension.ps1','craft_signing_interactive.ps1','office_opc_sign.ps1','opc_signature_windows.ps1','pdfcraft_pades_adapter.ps1','install_craft_signing_extension_v2.ps1')
 foreach($name in $names){if(-not(Test-Path -LiteralPath (Join-Path $PSScriptRoot $name) -PathType Leaf)){throw "MISSING_FILE:$name"}}
 [void][IO.Directory]::CreateDirectory([IO.Path]::GetFullPath($OutputDirectory))
 $zip=Join-Path ([IO.Path]::GetFullPath($OutputDirectory)) 'CraftSigningExtension-DEV.zip'
