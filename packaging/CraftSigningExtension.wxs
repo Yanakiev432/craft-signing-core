@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
-  <Package Name="Craft Signing Extension" Manufacturer="Craft Open Source" Version="0.1.0" UpgradeCode="CA0F22BB-EDC3-4B24-B037-0E53EE65F081" Scope="perUser">
+  <Package Name="Craft Signing Extension" Manufacturer="Craft Open Source" Version="0.1.1" UpgradeCode="CA0F22BB-EDC3-4B24-B037-0E53EE65F081" Scope="perUser">
     <MajorUpgrade DowngradeErrorMessage="A newer Craft Signing Extension is already installed." />
     <MediaTemplate EmbedCab="yes" />
     <StandardDirectory Id="LocalAppDataFolder">
@@ -11,6 +11,7 @@
           <Component Id="Script3" Guid="*"><File Id="File3" Source="office_opc_sign.ps1" KeyPath="yes" /></Component>
           <Component Id="Script4" Guid="*"><File Id="File4" Source="opc_signature_windows.ps1" KeyPath="yes" /></Component>
           <Component Id="Script5" Guid="*"><File Id="File5" Source="pdfcraft_pades_adapter.ps1" KeyPath="yes" /></Component>
+          <Component Id="Script6" Guid="*"><File Id="File6" Source="guard_libreoffice_roundtrip.ps1" KeyPath="yes" /></Component>
         </Directory>
       </Directory>
     </StandardDirectory>
@@ -20,6 +21,7 @@
       <ComponentRef Id="Script3" />
       <ComponentRef Id="Script4" />
       <ComponentRef Id="Script5" />
+      <ComponentRef Id="Script6" />
     </Feature>
   </Package>
 </Wix>
