@@ -51,6 +51,13 @@ try{
   if((Get-Item -LiteralPath $outputFull).Length -eq 0){throw 'PDFCRAFT_SIGNED_OUTPUT_EMPTY'}
   [pscustomobject]@{status='PDF_SIGNED_UNVERIFIED';output=$outputFull;qualification='NOT_ASSESSED'}
  } else {
-  $result
+  $report=($result -join "`n") | ConvertFrom-Json -Depth 30
+  if(-not $report.ok){throw 'PDFCRAFT_VERIFY_EXECUTION_FAILED'}
+  $signatureStep=@($report.steps | Where-Object tool -eq 'sign_list') | Select-Object -Last 1
+  if(-not $signatureStep){throw 'PDFCRAFT_VERIFY_RESULT_MISSING'}
+  $validation=@($signatureStep.result) | Select-Object -First 1
+  if(-not $validation -or $validation.count -lt 1){throw 'PDF_UNSIGNED'}
+  if(-not $validation.all_valid){throw 'PDF_SIGNATURE_NOT_ALL_VALID'}
+  [pscustomobject]@{status='PDF_SIGNATURES_VALID_BY_PDFCRAFT';count=$validation.count;qualification='NOT_ASSESSED'}
  }
 } finally {Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue}
