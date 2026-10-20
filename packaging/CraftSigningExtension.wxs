@@ -6,18 +6,20 @@
     <StandardDirectory Id="LocalAppDataFolder">
       <Directory Id="CraftPrograms" Name="Programs">
         <Directory Id="INSTALLFOLDER" Name="CraftSigningExtension">
-          <Component Id="CoreScripts" Guid="*">
-            <File Id="CoreEntry" Source="craft_signing_extension.ps1" KeyPath="yes" />
-            <File Source="craft_signing_interactive.ps1" />
-            <File Source="office_opc_sign.ps1" />
-            <File Source="opc_signature_windows.ps1" />
-            <File Source="pdfcraft_pades_adapter.ps1" />
-          </Component>
+          <Component Id="Script1" Guid="*"><File Id="File1" Source="craft_signing_extension.ps1" KeyPath="yes" /></Component>
+          <Component Id="Script2" Guid="*"><File Id="File2" Source="craft_signing_interactive.ps1" KeyPath="yes" /></Component>
+          <Component Id="Script3" Guid="*"><File Id="File3" Source="office_opc_sign.ps1" KeyPath="yes" /></Component>
+          <Component Id="Script4" Guid="*"><File Id="File4" Source="opc_signature_windows.ps1" KeyPath="yes" /></Component>
+          <Component Id="Script5" Guid="*"><File Id="File5" Source="pdfcraft_pades_adapter.ps1" KeyPath="yes" /></Component>
         </Directory>
       </Directory>
     </StandardDirectory>
     <Feature Id="MainFeature" Title="Craft Signing Extension" Level="1">
-      <ComponentRef Id="CoreScripts" />
+      <ComponentRef Id="Script1" />
+      <ComponentRef Id="Script2" />
+      <ComponentRef Id="Script3" />
+      <ComponentRef Id="Script4" />
+      <ComponentRef Id="Script5" />
     </Feature>
   </Package>
 </Wix>
