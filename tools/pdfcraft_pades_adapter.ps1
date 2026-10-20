@@ -10,7 +10,8 @@ param(
  [Parameter(Mandatory)][string]$InputPath,
  [string]$OutputPath,
  [string]$CertificateThumbprint,
- [string]$PdfCraftCli
+ [string]$PdfCraftCli,
+ [switch]$InvisibleSignature
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
@@ -30,9 +31,11 @@ if($Mode -eq 'Sign'){
  if(-not $cert -or -not $cert.HasPrivateKey){throw 'PDF_CERTIFICATE_NOT_AVAILABLE'}
  $sha=[Security.Cryptography.SHA256]::HashData($cert.RawData)
  $identity='windows:'+([Convert]::ToHexString($sha).ToLowerInvariant())
+ $signArgs=@{doc=1;id=$identity;out=$outputFull}
+ if(-not $InvisibleSignature){$signArgs.page=1;$signArgs.rect=@(55,55,305,135);$signArgs.appearance=@{name=$true;date=$true;labels=$true}}
  $steps=@(
   @{tool='doc_open';args=@{path=$inputFull}},
-  @{tool='sign_document';args=@{doc=1;id=$identity;out=$outputFull}}
+  @{tool='sign_document';args=$signArgs}
  )
 } else {
  if($OutputPath -or $CertificateThumbprint){throw 'PDF_VERIFY_ARGUMENTS_INVALID'}
