@@ -1,6 +1,10 @@
 #requires -Version 7.0
 [CmdletBinding()]
-param([Parameter(Mandatory)][string]$ExtensionDirectory)
+param(
+ [Parameter(Mandatory)][string]$ExtensionDirectory,
+ [string]$DssReportPath='C:\Users\User\Documents\PdfCraft-DSS-local\validation-20261020\dss-response.json',
+ [string]$ExpectedDssSha256='2AFC4BC9C44E9D975C89E0F7C19D49A26809B7991E5C9EE87507B0308C53857A'
+)
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 $names=@('craft_signing_extension.ps1','craft_signing_interactive.ps1','office_opc_sign.ps1','opc_signature_windows.ps1','pdfcraft_pades_adapter.ps1','install_craft_signing_extension_v2.ps1','build_extension_dev_zip.ps1')
@@ -16,14 +20,29 @@ if($entry -notmatch 'pdfcraft_pades_adapter.ps1'){throw 'GATE_PDF_DISPATCH_MISSI
 if($entry -notmatch 'CRAFT_EXTENSION_CERTIFICATE_REQUIRED'){throw 'GATE_CERTIFICATE_REFUSAL_MISSING'}
 $adapter=Get-Content -LiteralPath (Join-Path $ExtensionDirectory 'pdfcraft_pades_adapter.ps1') -Raw
 if($adapter -notmatch 'sign_document'){throw 'GATE_PDF_SIGN_MISSING'}
+$qes='PENDING'
+$qesDocument=$null
+if(Test-Path -LiteralPath $DssReportPath -PathType Leaf){
+ $actual=(Get-FileHash -LiteralPath $DssReportPath -Algorithm SHA256).Hash
+ if($actual -ne $ExpectedDssSha256){throw 'DSS_REPORT_SHA256_MISMATCH'}
+ $report=Get-Content -LiteralPath $DssReportPath -Raw|ConvertFrom-Json
+ $signatures=@($report.SimpleReport.signatureOrTimestampOrEvidenceRecord)
+ if($report.SimpleReport.SignaturesCount -ne 1 -or $report.SimpleReport.ValidSignaturesCount -ne 1 -or $signatures.Count -ne 1){throw 'DSS_SIGNATURE_COUNT_MISMATCH'}
+ $sig=$signatures[0].Signature
+ if($sig.Indication -ne 'TOTAL_PASSED' -or $sig.SignatureLevel.value -ne 'QESig' -or $sig.SignatureFormat -ne 'PAdES-BASELINE-B'){throw 'DSS_QES_CRITERIA_NOT_MET'}
+ if($report.SimpleReport.DocumentName -ne 'adapter-visible-btrust.pdf'){throw 'DSS_DOCUMENT_IDENTITY_MISMATCH'}
+ $qes='PASS_SPECIFIC_PDF'
+ $qesDocument=$report.SimpleReport.DocumentName
+}
 [pscustomobject]@{
- schema='craft.extension.release-gate.v2'
+ schema='craft.extension.release-gate.v3'
  development_scripts='PASS'
  pdf_adapter='PRESENT'
  real_btrust_hardware='PASS_PREVIOUS_TEST'
  office_opc_unit_tests='PASS_PREVIOUS_TEST'
  office_interoperability='PENDING'
- independent_qes_validation='PENDING'
+ independent_qes_validation=$qes
+ qes_document=$qesDocument
  trusted_exe='PENDING'
  signed_msi='PENDING'
  release='NO_GO'
