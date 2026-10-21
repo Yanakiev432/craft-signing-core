@@ -151,6 +151,8 @@ mod tests {
     }
 }
 #[cfg(target_os = "windows")]
+pub mod office_certificates;
+#[cfg(target_os = "windows")]
 pub mod opc_windows;
 #[cfg(target_os = "windows")]
 pub mod windows_cng;

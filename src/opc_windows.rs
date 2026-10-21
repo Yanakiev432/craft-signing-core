@@ -70,6 +70,7 @@ fn execute(
     input: &Path,
     output: Option<&Path>,
     thumbprint: Option<&str>,
+    allow_additional_signatures: Option<bool>,
 ) -> Result<String, String> {
     let guard = StagedScript::create()?;
     let mut cmd = Command::new(powershell());
@@ -87,6 +88,10 @@ fn execute(
     }
     if let Some(thumbprint) = thumbprint {
         cmd.arg("-CertificateThumbprint").arg(thumbprint);
+    }
+    if let Some(allow) = allow_additional_signatures {
+        cmd.arg("-AdditionalSignatures")
+            .arg(if allow { "allow" } else { "restrict" });
     }
     #[cfg(windows)]
     {
@@ -125,14 +130,41 @@ pub fn sign_office_document(
     if input == output {
         return Err("source and destination must differ".into());
     }
-    execute("sign", input, Some(output), Some(cert_thumbprint))
+    sign_office_document_with_policy(input, output, cert_thumbprint, true)
+}
+
+/// Sign a DOCX/XLSX document. When true (recommended), other people may
+/// subsequently add independent OPC signatures without invalidating earlier
+/// signatures. When false, Craft embeds a signed application-specific policy
+/// that blocks future signing in Craft only; this is not a universal Microsoft
+/// Office read-only/document-protection mechanism.
+pub fn sign_office_document_with_policy(
+    input: &Path,
+    output: &Path,
+    cert_thumbprint: &str,
+    allow_additional_signatures: bool,
+) -> Result<String, String> {
+    if cert_thumbprint.len() != 40 || !cert_thumbprint.as_bytes().iter().all(u8::is_ascii_hexdigit)
+    {
+        return Err("certificate thumbprint must be exactly 40 hexadecimal characters".into());
+    }
+    if input == output {
+        return Err("source and destination must differ".into());
+    }
+    execute(
+        "sign",
+        input,
+        Some(output),
+        Some(cert_thumbprint),
+        Some(allow_additional_signatures),
+    )
 }
 
 /// Independently reopen the document through Windows OPC/XMLDSig and reject
 /// invalid signatures or uncovered content parts. This does not imply QES,
 /// trusted timestamping, revocation validation or Microsoft Office UI parity.
 pub fn verify_office_document(input: &Path) -> Result<String, String> {
-    execute("verify", input, None, None)
+    execute("verify", input, None, None, None)
 }
 
 #[cfg(test)]
