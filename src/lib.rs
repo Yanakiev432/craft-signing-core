@@ -156,3 +156,6 @@ pub mod opc_windows;
 pub mod windows_cng;
 #[cfg(target_os = "windows")]
 pub mod windows_trust;
+
+#[cfg(target_os = "windows")]
+pub mod opc_native;
