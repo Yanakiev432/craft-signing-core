@@ -88,6 +88,11 @@ fn execute(
     if let Some(thumbprint) = thumbprint {
         cmd.arg("-CertificateThumbprint").arg(thumbprint);
     }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
     let result = cmd
         .output()
         .map_err(|e| format!("Windows OPC helper could not start: {e}"))?;
