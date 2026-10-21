@@ -11,3 +11,5 @@ path = "src/lib.rs"
 [target.'cfg(target_os = "windows")'.dependencies]
 rustls-cng = { version = "0.7.1", default-features = false }
 sha2 = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
