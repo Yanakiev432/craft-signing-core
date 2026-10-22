@@ -314,6 +314,10 @@ extern "C" __declspec(dllexport) long __cdecl craft_opc_sign_inprocess(
   if(!cert) { CertCloseStore(certStore,0); return HRESULT_FROM_WIN32(ERROR_NOT_FOUND); }
   ComPtr<IOpcSigningOptions> options;
   hr=manager->CreateSigningOptions(&options);
+  // Embed the X.509 certificate inside the authenticated signature part.
+  // This avoids an additional unsigned certificate part while preserving
+  // package-wide part coverage checks for all document content.
+  if(SUCCEEDED(hr)) hr=options->SetCertificateEmbeddingOption(OPC_CERTIFICATE_IN_SIGNATURE_PART);
   if(SUCCEEDED(hr)) hr=options->SetDefaultDigestMethod(L"http://www.w3.org/2001/04/xmlenc#sha256");
   if(SUCCEEDED(hr)) hr=options->SetSignatureMethod(L"http://www.w3.org/2001/04/xmldsig-more#rsa-sha256");
   if(SUCCEEDED(hr)) hr=sign_parts(factory.Get(),pkg.Get(),options.Get());
