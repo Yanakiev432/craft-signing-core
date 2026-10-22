@@ -348,3 +348,49 @@ extern "C" __declspec(dllexport) long __cdecl craft_opc_sign_inprocess(
   if(FAILED(hr)) DeleteFileW(temp.c_str());
   return hr;
 }
+extern "C" int craft_windows_cert_inventory(char* output, int capacity) {
+  if (!output || capacity < 2) return -1;
+  HCERTSTORE store=CertOpenSystemStoreW(0,L"MY");
+  if (!store) return -2;
+  std::string data="[";
+  PCCERT_CONTEXT cert=nullptr;
+  bool first=true;
+  while ((cert=CertEnumCertificatesInStore(store,cert))!=nullptr) {
+    BYTE hash[20]={}; DWORD size=sizeof(hash);
+    if (!CertGetCertificateContextProperty(cert,CERT_SHA1_HASH_PROP_ID,hash,&size) || size!=20) continue;
+    wchar_t subject[512]={}, issuer[512]={};
+    CertGetNameStringW(cert,CERT_NAME_SIMPLE_DISPLAY_TYPE,0,nullptr,subject,512);
+    CertGetNameStringW(cert,CERT_NAME_SIMPLE_DISPLAY_TYPE,CERT_NAME_ISSUER_FLAG,nullptr,issuer,512);
+    auto escape=[](const wchar_t* wide) {
+      int len=WideCharToMultiByte(CP_UTF8,0,wide,-1,nullptr,0,nullptr,nullptr);
+      if(len<=0) return std::string();
+      std::string utf8(size_t(len),'\0');
+      WideCharToMultiByte(CP_UTF8,0,wide,-1,utf8.data(),len,nullptr,nullptr);
+      utf8.pop_back();
+      std::string escaped;
+      for(unsigned char ch:utf8) {
+        if(ch=='"' || ch=='\\') { escaped+='\\'; escaped+=char(ch); }
+        else if(ch<32) { char buf[8]; sprintf_s(buf,"\\u%04X",unsigned(ch)); escaped+=buf; }
+        else escaped+=char(ch);
+      }
+      return escaped;
+    };
+    char thumb[41]={};
+    for(int i=0;i<20;i++) sprintf_s(thumb+2*i,41-2*i,"%02X",unsigned(hash[i]));
+    DWORD keysize=0;
+    bool haskey=CertGetCertificateContextProperty(cert,CERT_KEY_PROV_INFO_PROP_ID,nullptr,&keysize)!=FALSE;
+    SYSTEMTIME now={}; GetSystemTime(&now);
+    FILETIME ft={}; SystemTimeToFileTime(&now,&ft);
+    bool valid=CertVerifyTimeValidity(&ft,cert->pCertInfo)==0;
+    SYSTEMTIME until={}; FileTimeToSystemTime(&cert->pCertInfo->NotAfter,&until);
+    char date[32]; sprintf_s(date,"%04u-%02u-%02u",until.wYear,until.wMonth,until.wDay);
+    if(!first) data+=",";
+    first=false;
+    data+="{\"thumbprint\":\""+std::string(thumb)+"\",\"subject\":\""+escape(subject)+"\",\"issuer\":\""+escape(issuer)+"\",\"expires\":\""+std::string(date)+"\",\"has_private_key\":"+(haskey?"true":"false")+",\"valid_now\":"+(valid?"true":"false")+"}";
+  }
+  CertCloseStore(store,0);
+  data+="]";
+  if(data.size()+1>size_t(capacity)) return -3;
+  memcpy(output,data.c_str(),data.size()+1);
+  return int(data.size());
+}
