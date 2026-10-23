@@ -1,7 +1,14 @@
 //! In-process Windows OPC signature bridge. No PowerShell, CMD or subprocess.
 //! Integrity validation is not certificate trust or eIDAS QES qualification.
 #![cfg(windows)]
-use std::{ffi::OsStr, os::windows::ffi::OsStrExt, path::Path};
+use std::{
+    ffi::OsStr,
+    os::windows::ffi::OsStrExt,
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
+};
+static NEXT_OPC_STAGE: AtomicU64 = AtomicU64::new(0);
 
 unsafe extern "C" {
     fn craft_opc_verify_inprocess(source: *const u16, count: *mut i32) -> i32;
@@ -70,14 +77,47 @@ pub fn sign_opc_inprocess(
             .map_err(|e| e.to_string())?
             .join(output)
     };
-    let src = wide(absolute.as_os_str());
-    let dst = wide(abs_output.as_os_str());
-    let identity = wide(OsStr::new(sha1_thumbprint));
-    let hr = unsafe { craft_opc_sign_inprocess(src.as_ptr(), dst.as_ptr(), identity.as_ptr()) };
-    if hr < 0 {
-        return Err(error("native OPC signing", hr));
+    // Never expose a half-normalized output as the user's signed file.
+    // Native OPC signs into a unique sibling; ZIP is rewritten in-process,
+    // both original and normalized signed archives are checked independently.
+    let sequence = NEXT_OPC_STAGE.fetch_add(1, Ordering::Relaxed);
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_nanos();
+    let stem = format!(".craft-opc-{}-{stamp}-{sequence}", std::process::id());
+    let mut raw_name = abs_output.as_os_str().to_os_string();
+    raw_name.push(format!("{stem}.raw"));
+    let raw = PathBuf::from(raw_name);
+    let mut stage_name = abs_output.as_os_str().to_os_string();
+    stage_name.push(format!("{stem}.normalized"));
+    let normalized = PathBuf::from(stage_name);
+    if raw.exists() || normalized.exists() {
+        return Err("temporary OPC output name collision".into());
     }
-    Ok(())
+    let result = (|| {
+        let src = wide(absolute.as_os_str());
+        let dst = wide(raw.as_os_str());
+        let identity = wide(OsStr::new(sha1_thumbprint));
+        let hr = unsafe { craft_opc_sign_inprocess(src.as_ptr(), dst.as_ptr(), identity.as_ptr()) };
+        if hr < 0 {
+            return Err(error("native OPC signing", hr));
+        }
+        let before = verify_opc_inprocess(&raw)?;
+        crate::opc_zip::normalize_container(&raw, &normalized)?;
+        let after = verify_opc_inprocess(&normalized)?;
+        if before != after {
+            return Err("ZIP normalization changed the verified signature count".into());
+        }
+        if abs_output.exists() {
+            return Err("signed destination appeared while signing".into());
+        }
+        std::fs::rename(&normalized, &abs_output).map_err(|e| e.to_string())?;
+        Ok(())
+    })();
+    let _ = std::fs::remove_file(&raw);
+    let _ = std::fs::remove_file(&normalized);
+    result
 }
 #[cfg(test)]
 mod tests {
