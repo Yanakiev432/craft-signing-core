@@ -3,6 +3,12 @@
 pub mod format_contract;
 pub mod office_appearance;
 #[cfg(windows)]
+pub mod office_visible_opc;
+#[cfg(windows)]
+pub mod office_appearance_render;
+#[cfg(windows)]
+pub mod office_visible_sign;
+#[cfg(windows)]
 pub mod opc_native;
 #[cfg(windows)]
 mod opc_zip;
