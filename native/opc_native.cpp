@@ -348,7 +348,9 @@ extern "C" __declspec(dllexport) long __cdecl craft_opc_sign_inprocess(
   std::wstring temp=std::wstring(destination)+L".tmp"+uuid;
   ComPtr<IStream> out;
   hr=factory->CreateStreamOnFile(temp.c_str(),OPC_STREAM_IO_WRITE,nullptr,FILE_ATTRIBUTE_NORMAL,&out);
-  if(SUCCEEDED(hr)) hr=factory->WritePackageToStream(pkg.Get(),OPC_WRITE_DEFAULT,out.Get());
+  // OPC_WRITE_DEFAULT serializes even small documents as Zip64 (minimum reader version 4.5).
+  // Prefer Zip32 for Office interoperability, failing closed when Zip32 limits are exceeded.
+  if(SUCCEEDED(hr)) hr=factory->WritePackageToStream(pkg.Get(),OPC_WRITE_FORCE_ZIP32,out.Get());
   out.Reset();
   if(SUCCEEDED(hr)) {
     int valid=0;
