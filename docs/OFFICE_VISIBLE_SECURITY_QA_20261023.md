@@ -73,3 +73,13 @@ PDFCraft's normal local QES wrapper has been fixed separately in [pdfcraft PR #2
 - Microsoft Office manual acceptance is **deferred to 26 October 2026**, not claimed complete.
 - A ready-to-transfer synthetic-only test package is saved at `C:\Users\User\Documents\CRAFT_OFFICE_ACCEPTANCE_20261026.zip`, containing unsigned and signed DOCX/XLSX plus SHA-256 manifest and Bulgarian step-by-step acceptance checklist.
 - No final QES certification for Office documents, no new real B-Trust signed visible specimen, no installer release.
+
+## 24 October — explicitly controlled Excel placement and honest UI
+
+- Signing-dialog flow now permits **Choose Digital ID → Continue to signature settings → Sign a separate copy**, without first drawing an unrelated screen rectangle. Drawing remains an optional screen-only guide and is not advertised as the Office insertion coordinate.
+- For XLSX, users can explicitly enter an **A1 cell address** on the first sheet. The validated parser accepts `A1` to `XFD1048576` and rejects ranges, formulas, absolute references, leading-zero row numbers and out-of-bounds cells.
+- Word currently continues to use the **document-end** placement; there is still no page-coordinate mapping or native Word interactive Sign confirmation.
+- Added Rust unit tests for correct A1 parsing and invalid-cell rejection. Shared core now **26/26 PASS** with Clippy warnings-as-errors PASS.
+- Verified a real synthetic developer-certificate XLSX generated using the **M12** anchor. Windows OPC signature integrity/identity PASS, OOXML DrawingML reports zero-based column 12 and row 11, and source bytes are unchanged. Evidence: `target/office-custom-cell-20261024/anchor-acceptance.json`.
+- Updated offline Office confirmation kit `C:\Users\User\Documents\CRAFT_OFFICE_ACCEPTANCE_20261026_V2.zip` includes Word signed/unsigned, Excel signed/unsigned at E2 and an additional signed Excel graphic at M12. SHA-256 manifest and Bulgarian instructions accompany all five test documents.
+- No release to main, no hardware B-Trust attempt and no QES claim for Office files. The manual Office acceptance remains scheduled for **26 October 2026**.

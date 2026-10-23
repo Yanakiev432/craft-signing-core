@@ -33,6 +33,37 @@ pub enum OfficeImagePlacement {
     ExcelCell { column: u32, row: u32 },
 }
 
+/// Parse a user-entered Excel cell (A1 notation) into a zero-based anchor.
+/// Rejects absolute references, ranges, formulas and out-of-sheet positions.
+/// This does not infer coordinates from a screen rectangle or viewport zoom.
+pub fn parse_excel_cell_anchor(value: &str) -> Result<OfficeImagePlacement, String> {
+    let text = value.trim();
+    if text.is_empty() || !text.is_ascii() || text.len() > 10 {
+        return Err("Enter one Excel cell, for example E2".into());
+    }
+    let letters = text.bytes().take_while(|b| b.is_ascii_alphabetic()).count();
+    if !(1..=3).contains(&letters) {
+        return Err("Excel column must be A through XFD".into());
+    }
+    let (column_letters, row_digits) = text.split_at(letters);
+    if row_digits.is_empty() || row_digits.starts_with('0')
+        || !row_digits.bytes().all(|b| b.is_ascii_digit())
+    {
+        return Err("Excel row must be 1 through 1048576".into());
+    }
+    let mut col = 0_u32;
+    for b in column_letters.bytes() {
+        let letter = (b.to_ascii_uppercase() - b'A' + 1) as u32;
+        col = col.checked_mul(26).and_then(|v| v.checked_add(letter))
+            .ok_or("Excel column outside safe bounds")?;
+    }
+    let row = row_digits.parse::<u32>().map_err(|_| "Excel row is too large")?;
+    if !(1..=16384).contains(&col) || !(1..=1048576).contains(&row) {
+        return Err("Excel cell outside supported sheet bounds".into());
+    }
+    Ok(OfficeImagePlacement::ExcelCell { column: col - 1, row: row - 1 })
+}
+
 /// For **unsigned** source only, create a distinct unsigned file with a PNG
 /// appearance embedded as an Office image. The returned document MUST then
 /// be signed by the already verified native OPC implementation.
@@ -454,6 +485,23 @@ mod tests {
         );
         parts.insert("[Content_Types].xml".into(), (types.into_bytes(), CompressionMethod::Stored));
         assert!(reject_signature_relationships_and_content_types(&parts).is_err());
+    }
+
+    #[test]
+    fn excel_cell_accepts_case_and_sheet_boundaries() {
+        assert!(matches!(parse_excel_cell_anchor(" E2 "), Ok(OfficeImagePlacement::ExcelCell { column: 4, row: 1 })));
+        assert!(matches!(parse_excel_cell_anchor("a1"), Ok(OfficeImagePlacement::ExcelCell { column: 0, row: 0 })));
+        assert!(matches!(parse_excel_cell_anchor("XFD1048576"), Ok(OfficeImagePlacement::ExcelCell { column: 16383, row: 1048575 })));
+        assert!(matches!(parse_excel_cell_anchor("ZZ100"), Ok(OfficeImagePlacement::ExcelCell { column: 701, row: 99 })));
+    }
+
+    #[test]
+    fn excel_cell_rejects_bad_or_ambiguous_references() {
+        for invalid in ["", "0", "A0", "A01", "A1048577", "XFE1", "ZZZ1",
+                        "AAAA2", "A-1", "$A$1", "A1:B2", "Sheet2!E2",
+                        "1A", "=A1", "E 2", "А1", "A999999999999999"] {
+            assert!(parse_excel_cell_anchor(invalid).is_err(), "accepted {invalid:?}");
+        }
     }
 
     #[test]
