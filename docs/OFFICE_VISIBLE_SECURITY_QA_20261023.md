@@ -44,3 +44,20 @@ The script selects the B-Trust thumbprint proven on an earlier, independently ve
 After hardware PASS, open these **exact newly generated files** in full Microsoft Word and Excel on the test PC. Record Office version, presence/placement of visible appearance, signing pane, signature details, and native Word signature-line click behaviour. In Excel the graphic is not a native interactive signature line. The earlier iOS/Google preview and Microsoft Office tests cover different specimens, and do not substitute for this.
 
 Do not merge into main or publicly release before real Office compatibility, exact mouse viewport-to-document position mapping, broader OOXML acceptance and independent qualified document assessment.
+
+
+## Independent EU DSS coverage and limitations (additional acceptance)
+
+The locally provisioned EU DSS 6.5.1 service at 127.0.0.1:18080 independently confirmed **TOTAL_PASSED / QESig** for the previously signed B-Trust **PDF**. This does not transfer qualification to Word/Excel packages.
+
+Four synthetic Office packages were submitted **only through localhost**, without external document upload:
+- Earlier B-Trust-signed DOCX and XLSX.
+- Current development-certificate signed visual DOCX and XLSX.
+
+EU DSS returned HTTP 500 for all four inputs; **whole-document Office QES remains NOT ESTABLISHED**. The service did not issue a report demonstrating QESig for the Office containers. This is a validation capability / endpoint failure, not a demonstrated invalid OPC signature. Independent Windows OPC verification and Microsoft desktop Office on earlier specimens are separate gates.
+
+Raw private DSS service responses and a machine summary remain at:
+`target/office-dss-20261023-1/acceptance.json`.
+
+The constrained, auditable loopback test program is `tools/office_dss_loopback_acceptance.py`.
+PDFCraft's normal local QES wrapper has been fixed separately in [pdfcraft PR #24](https://github.com/Yanakiev432/pdfcraft/pull/24).
