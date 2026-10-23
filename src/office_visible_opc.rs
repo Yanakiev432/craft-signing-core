@@ -117,6 +117,10 @@ pub fn add_unsigned_visual_appearance(
         entry.read_to_end(&mut data).map_err(|e| e.to_string())?;
         bytes.insert(name, (data, entry.compression()));
     }
+    // ZIP filenames alone are insufficient to establish unsigned OPC input.
+    // A relationship may point to a signature origin under an unexpected
+    // part name. Decode XML attribute entities before classifying the type.
+    reject_signature_relationships_and_content_types(&bytes)?;
 
     let stamp = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let image_filename = format!("CraftSignature-{stamp}.png");
@@ -212,6 +216,68 @@ fn has_drawing_element(xml: &str) -> bool {
         }
         Some(tag.trim_end_matches('/'))
     }).any(|tag| tag == "drawing" || tag.ends_with(":drawing"))
+}
+
+/// Refuse any package which *advertises* signatures, even if the signature
+/// parts are renamed or absent. A signed source must never be rewritten merely
+/// because its ZIP filenames do not match the conventional _xmlsignatures path.
+/// XML is parsed with namespace awareness; attribute character references are
+/// decoded before checking relationship/content-type values.
+fn reject_signature_relationships_and_content_types(
+    bytes: &std::collections::BTreeMap<String, (Vec<u8>, CompressionMethod)>,
+) -> Result<(), String> {
+    for (name, (content, _)) in bytes {
+        if !(name.ends_with(".rels") || name == "[Content_Types].xml") {
+            continue;
+        }
+        if content.len() > MAX_XML {
+            return Err(format!("OPC metadata too large: {name}"));
+        }
+        let xml = std::str::from_utf8(content)
+            .map_err(|_| format!("Non-UTF8 OPC metadata in {name}"))?;
+        if xml.contains("<!DOCTYPE") || xml.contains("<!ENTITY") {
+            return Err("OPC metadata DTD/entities are not supported".into());
+        }
+        let document = roxmltree::Document::parse(xml)
+            .map_err(|e| format!("Malformed OPC relationship/content types XML in {name}: {e}"))?;
+        let root = document.root_element();
+        if name.ends_with(".rels") {
+            if root.tag_name().namespace() != Some(REL_NS)
+                || root.tag_name().name() != "Relationships"
+            {
+                return Err("Unexpected OPC relationship root namespace".into());
+            }
+            for entry in root.children().filter(|n| n.is_element()) {
+                if entry.tag_name().namespace() != Some(REL_NS)
+                    || entry.tag_name().name() != "Relationship"
+                {
+                    return Err("Unexpected relationship element".into());
+                }
+                let relationship_type = entry.attribute("Type")
+                    .ok_or("Relationship without a Type attribute")?;
+                if relationship_type.to_ascii_lowercase().contains("digital-signature")
+                    || relationship_type.to_ascii_lowercase().contains("digitalsignature")
+                {
+                    return Err("Already signed or signature-marked OPC relationships".into());
+                }
+            }
+        } else {
+            if root.tag_name().namespace() != Some(CT_NS)
+                || root.tag_name().name() != "Types"
+            {
+                return Err("Unexpected OPC content-types root namespace".into());
+            }
+            for entry in root.children().filter(|n| n.is_element()) {
+                let ct = entry.attribute("ContentType").unwrap_or("");
+                if ct.to_ascii_lowercase().contains("digital-signature")
+                    || ct.to_ascii_lowercase().contains("digitalsignature")
+                {
+                    return Err("Existing OPC signature content type forbids visual rewrite".into());
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn xml_part(bytes: &std::collections::BTreeMap<String,(Vec<u8>, CompressionMethod)>, name: &str) -> Result<String, String> {
@@ -355,6 +421,41 @@ mod tests {
         assert!(has_drawing_element("<worksheet><z:drawing/></worksheet>"));
         assert!(!has_drawing_element("<worksheet><c v=\"drawing\"/></worksheet>"));
     }
+    #[test]
+    fn signed_package_relations_are_rejected_even_with_entity_encoded_type() {
+        let mut parts = std::collections::BTreeMap::new();
+        let rels = format!(
+            "<Relationships xmlns=\"{REL_NS}\"><Relationship Id=\"s1\" \
+            Type=\"http://schemas.openxmlformats.org/package/2006/relationships/digital&#45;signature/origin\" \
+            Target=\"some-obscure-path.xml\"/></Relationships>"
+        );
+        parts.insert("_rels/.rels".into(), (rels.into_bytes(), CompressionMethod::Stored));
+        assert!(reject_signature_relationships_and_content_types(&parts).is_err());
+    }
+
+    #[test]
+    fn unsigned_office_package_relations_are_accepted() {
+        let mut parts = std::collections::BTreeMap::new();
+        let rels = format!(
+            "<Relationships xmlns=\"{REL_NS}\"><Relationship Id=\"rId1\" \
+             Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" \
+             Target=\"word/document.xml\"/></Relationships>"
+        );
+        parts.insert("_rels/.rels".into(), (rels.into_bytes(), CompressionMethod::Stored));
+        assert!(reject_signature_relationships_and_content_types(&parts).is_ok());
+    }
+
+    #[test]
+    fn advertised_signature_content_type_fails_closed() {
+        let mut parts = std::collections::BTreeMap::new();
+        let types = format!(
+            "<Types xmlns=\"{CT_NS}\"><Override PartName=\"/unusual/sign.xml\" \
+            ContentType=\"application/vnd.openxmlformats-package.digital-signature-xmlsignature+xml\"/></Types>"
+        );
+        parts.insert("[Content_Types].xml".into(), (types.into_bytes(), CompressionMethod::Stored));
+        assert!(reject_signature_relationships_and_content_types(&parts).is_err());
+    }
+
     #[test]
     fn no_missing_xml_close_accepted() {
         let mut xml="<Types />".to_owned();
