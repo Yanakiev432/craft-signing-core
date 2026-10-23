@@ -1,8 +1,8 @@
 //! Experimental **unsigned** DOCX/XLSX visible picture writer.
 //! Images are written into the OPC package *before* XMLDSig signing.
-//! No public UI invokes this module yet: real document-position mapping,
-//! certificate-bound render text and native Office signature-line behavior
-//! need separate acceptance.
+//! WordCraft/GridCraft call this writer through an explicit opt-in path.
+//! Document placement is currently fixed, not mapped from the screen rectangle;
+//! native Office interactive Sign behavior needs separate acceptance.
 //!
 //! Fail closed on already signed inputs, active drawings and unusual XML.
 //! No subprocess, no private-key access and no modification of source documents.
@@ -10,7 +10,7 @@
 use std::{
     collections::HashSet,
     fs::{File, OpenOptions},
-    io::{Read, Write},
+    io::{Read, Seek, SeekFrom, Write},
     path::Path,
 };
 use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
@@ -74,8 +74,16 @@ pub fn add_unsigned_visual_appearance(
         return Err("Excel anchor outside worksheet bounds".into());
     }
 
-    let input = File::open(source).map_err(|e| e.to_string())?;
+    let mut input = File::open(source).map_err(|e| e.to_string())?;
+    // The zip crate indexes entries by name and can silently collapse exact
+    // duplicates. Validate the raw central-directory entry count before
+    // trusting archive.len() or any by_index() lookup.
+    let declared_entries = zip32_central_directory_entries(&mut input)?;
+    input.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
     let mut archive = ZipArchive::new(input).map_err(|e| e.to_string())?;
+    if archive.len() != declared_entries {
+        return Err("Repeated ZIP central-directory names or collapsed entries".into());
+    }
     if archive.is_empty() || archive.len() > 65520 {
         return Err("Office ZIP entry count outside accepted limit".into());
     }
@@ -148,6 +156,62 @@ pub fn add_unsigned_visual_appearance(
         let _ = std::fs::remove_file(output);
     }
     result
+}
+
+/// Parse ZIP32 EOCD directly. A ZIP archive can contain repeated central
+/// directory names that ZipArchive silently collapses into one entry.
+fn zip32_central_directory_entries(file: &mut File) -> Result<usize, String> {
+    let total_bytes = file.metadata().map_err(|e| e.to_string())?.len();
+    if total_bytes < 22 {
+        return Err("ZIP32 end-of-central-directory is missing".into());
+    }
+    let tail_len = total_bytes.min(22 + 65535) as usize;
+    file.seek(SeekFrom::End(-(tail_len as i64)))
+        .map_err(|e| e.to_string())?;
+    let mut tail = vec![0u8; tail_len];
+    file.read_exact(&mut tail).map_err(|e| e.to_string())?;
+    let eocd = (0..=tail_len - 22)
+        .rev()
+        .find(|&i| {
+            &tail[i..i + 4] == b"PK\x05\x06"
+                && i + 22 + u16::from_le_bytes([tail[i + 20], tail[i + 21]]) as usize == tail_len
+        })
+        .ok_or("ZIP32 EOCD not found or archive has trailing data")?;
+    let u16_at = |n: usize| u16::from_le_bytes([tail[eocd + n], tail[eocd + n + 1]]);
+    let u32_at = |n: usize| u32::from_le_bytes(
+        tail[eocd + n..eocd + n + 4]
+            .try_into()
+            .expect("validated 22-byte EOCD"),
+    );
+    let entries = u16_at(10);
+    if u16_at(4) != 0
+        || u16_at(6) != 0
+        || u16_at(8) != entries
+        || entries == u16::MAX
+        || u32_at(12) == u32::MAX
+        || u32_at(16) == u32::MAX
+    {
+        return Err("Multi-disk or ZIP64 package is outside safe Office ZIP32 profile".into());
+    }
+    let offset = u32_at(16) as u64;
+    let cd_size = u32_at(12) as u64;
+    let eocd_file_offset = total_bytes - tail_len as u64 + eocd as u64;
+    if offset.checked_add(cd_size) != Some(eocd_file_offset) {
+        return Err("ZIP32 central directory length or offset mismatch".into());
+    }
+    Ok(entries as usize)
+}
+
+/// Recognize drawing elements regardless of XML namespace prefix. Existing
+/// workbook drawing relationships must never be silently overridden.
+fn has_drawing_element(xml: &str) -> bool {
+    xml.split('<').skip(1).filter_map(|part| {
+        let tag = part.split(|c: char| c.is_whitespace() || c == '>').next()?;
+        if tag.starts_with('/') || tag.starts_with('!') || tag.starts_with('?') {
+            return None;
+        }
+        Some(tag.trim_end_matches('/'))
+    }).any(|tag| tag == "drawing" || tag.ends_with(":drawing"))
 }
 
 fn xml_part(bytes: &std::collections::BTreeMap<String,(Vec<u8>, CompressionMethod)>, name: &str) -> Result<String, String> {
@@ -243,7 +307,7 @@ fn inject_excel(bytes: &mut std::collections::BTreeMap<String,(Vec<u8>,Compressi
     let mut xml = xml_part(bytes,"xl/worksheets/sheet1.xml")?;
     if !xml.contains("http://schemas.openxmlformats.org/spreadsheetml/2006/main")
         || !xml.contains("</worksheet>")
-        || xml.contains("<drawing") || xml.contains("<x:drawing") {
+        || has_drawing_element(&xml) {
         return Err("Unsupported worksheet or existing drawing: no destructive replacement".into());
     }
     let node=format!("<drawing xmlns:r=\"{R_NS}\" r:id=\"{rid}\"/>");
@@ -283,6 +347,13 @@ mod tests {
     #[test]
     fn escapes_untrusted_certificate_display_names() {
         assert_eq!(sanitize_xml("A < B & \"C\""), "A &lt; B &amp; &quot;C&quot;");
+    }
+    #[test]
+    fn existing_excel_drawings_are_detected_even_with_namespace_prefixes() {
+        assert!(has_drawing_element("<worksheet><drawing r:id=\"rId1\"/></worksheet>"));
+        assert!(has_drawing_element("<worksheet><x15:drawing r:id=\"rId1\"/></worksheet>"));
+        assert!(has_drawing_element("<worksheet><z:drawing/></worksheet>"));
+        assert!(!has_drawing_element("<worksheet><c v=\"drawing\"/></worksheet>"));
     }
     #[test]
     fn no_missing_xml_close_accepted() {
