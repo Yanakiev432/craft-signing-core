@@ -61,3 +61,15 @@ Raw private DSS service responses and a machine summary remain at:
 
 The constrained, auditable loopback test program is `tools/office_dss_loopback_acceptance.py`.
 PDFCraft's normal local QES wrapper has been fixed separately in [pdfcraft PR #24](https://github.com/Yanakiev432/pdfcraft/pull/24).
+
+## 24 October 2026 — defensive OPC metadata gate and next Office package
+
+- Strengthened the unsigned OOXML writer to parse **all package .rels** using a namespace-aware XML parser before any transformation. Existing digital-signature relationship types are rejected even when signature parts have nonstandard paths and the type has encoded XML attribute characters (for example, `digital&#45;signature`).
+- A signed or signature-marked content type also blocks rewriting; the previous ZIP path guards and hardware signer selection remain unchanged.
+- Rust unit suite: **24/24 PASS**, Clippy `--all-targets -- -D warnings` **PASS**.
+- Synthetic fail-closed negative archive suite: **20/20 PASS** (`target/native-visible-negative-20261024-opc-rel/acceptance.json`).
+- Normal positive certificate-bound DOCX and XLSX still generate **2/2 PASS**, independently verified by WindowsBase after signing (`target/native-identity-20261024-opc-rel/acceptance.json`).
+- LibreOffice headless re-open and PDF export of the newly generated DOCX and XLSX: **2/2 PASS**.
+- Microsoft Office manual acceptance is **deferred to 26 October 2026**, not claimed complete.
+- A ready-to-transfer synthetic-only test package is saved at `C:\Users\User\Documents\CRAFT_OFFICE_ACCEPTANCE_20261026.zip`, containing unsigned and signed DOCX/XLSX plus SHA-256 manifest and Bulgarian step-by-step acceptance checklist.
+- No final QES certification for Office documents, no new real B-Trust signed visible specimen, no installer release.
