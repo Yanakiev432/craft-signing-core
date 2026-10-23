@@ -63,3 +63,5 @@ try{
   'SIGNED_CONTENT_TAMPER_REJECTION_PASS'
   'OPC_NEGATIVE_TESTS_PASS=2/2'
 } finally {Pop-Location}
+# Deliberate negative checks leave child exit code 1; normalize only after ALL assertions.
+$global:LASTEXITCODE=0

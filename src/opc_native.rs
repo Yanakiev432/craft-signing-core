@@ -18,8 +18,8 @@ fn error(stage: &str, hr: i32) -> String {
 }
 
 /// Validates signed XML and covered OPC references without starting a shell.
-/// A successful result does not establish certificate trust or absence of
-/// extra, unsigned OPC parts. Those require independent stricter validation.
+/// Package-wide OPC part coverage is enforced by the native implementation.
+/// A successful result does not establish certificate trust or eIDAS QES.
 pub fn verify_opc_inprocess(path: &Path) -> Result<usize, String> {
     let absolute = path
         .canonicalize()

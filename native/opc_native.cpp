@@ -1,6 +1,6 @@
 // In-process native Windows OPC API adapter; no child processes.
-// Signature validation checks CMS/XMLDSig integrity; eIDAS QES and package-wide
-// unsigned additions require distinct independent acceptance. MIT/Apache-2.0.
+// Signature validation checks OPC XMLDSig integrity and rejects unsigned content;
+// certificate trust, revocation, and eIDAS QES need separate acceptance. MIT/Apache-2.0.
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
 #include <msopc.h>
@@ -75,6 +75,8 @@ HRESULT append_relationships(IOpcSignatureRelationshipReferenceSet* refs, IOpcUr
   return refs->Create(source,nullptr,OPC_RELATIONSHIP_SIGN_USING_SELECTORS,
                       selectors.Get(),OPC_CANONICALIZATION_C14N,&signedRelation);
 }
+bool signature_metadata_part(IOpcPart* part);
+HRESULT crypto_verify(IOpcPackage* package, IOpcDigitalSignatureManager* manager, int* checked);
 HRESULT sign_parts(IOpcFactory* factory,IOpcPackage* package,IOpcSigningOptions* options) {
   ComPtr<IOpcSignaturePartReferenceSet> partRefs;
   ComPtr<IOpcSignatureRelationshipReferenceSet> relRefs;
@@ -94,6 +96,9 @@ HRESULT sign_parts(IOpcFactory* factory,IOpcPackage* package,IOpcSigningOptions*
     ComPtr<IOpcPart> part;
     hr=en->GetCurrent(&part);
     if(FAILED(hr)) return hr;
+    // Existing signature markup is managed separately. Signing it would
+    // make a new signature dependent on (or invalidate) earlier signatures.
+    if(signature_metadata_part(part.Get())) continue;
     ComPtr<IOpcPartUri> uri;
     hr=part->GetName(&uri);
     if(FAILED(hr)) return hr;
@@ -305,7 +310,13 @@ extern "C" __declspec(dllexport) long __cdecl craft_opc_sign_inprocess(
   BOOL already=FALSE;
   hr=existing->MoveNext(&already);
   if(FAILED(hr)) return hr;
-  if(already) return HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS); // no silent overwrite or counter-sign.
+  int priorCount=0;
+  if(already) {
+    // Existing signatures must already be valid before another is appended.
+    hr=crypto_verify(pkg.Get(),manager.Get(),&priorCount);
+    if(FAILED(hr)) return hr;
+    if(priorCount<=0 || priorCount>=32) return E_INVALIDARG;
+  }
   HCERTSTORE certStore=CertOpenStore(CERT_STORE_PROV_SYSTEM_W,0,0,CERT_SYSTEM_STORE_CURRENT_USER,L"MY");
   if(!certStore) return HRESULT_FROM_WIN32(GetLastError());
   CRYPT_HASH_BLOB thumbprint={20,digest};
@@ -343,7 +354,7 @@ extern "C" __declspec(dllexport) long __cdecl craft_opc_sign_inprocess(
     int valid=0;
     // The result is reopened independently, not only verified in memory.
     long check=craft_opc_verify_inprocess(temp.c_str(),&valid);
-    if(FAILED(check)||valid!=1) {
+    if(FAILED(check)||valid!=priorCount+1) {
       hr=FAILED(check)?check:TRUST_E_BAD_DIGEST;
     }
   }
