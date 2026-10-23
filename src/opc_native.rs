@@ -109,10 +109,12 @@ pub fn sign_opc_inprocess(
         if before != after {
             return Err("ZIP normalization changed the verified signature count".into());
         }
-        if abs_output.exists() {
-            return Err("signed destination appeared while signing".into());
-        }
-        std::fs::rename(&normalized, &abs_output).map_err(|e| e.to_string())?;
+        // The final path must be created atomically without replacement.
+        // A separate process might create it after our earlier exists() check.
+        // Staging and destination are siblings on the same filesystem, so
+        // hard_link refuses an existing name without changing validated bytes.
+        std::fs::hard_link(&normalized, &abs_output)
+            .map_err(|e| format!("atomic no-overwrite OPC publication failed: {e}"))?;
         Ok(())
     })();
     let _ = std::fs::remove_file(&raw);
