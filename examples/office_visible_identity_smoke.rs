@@ -2,7 +2,7 @@
 #![cfg(windows)]
 use craft_signing_core::{
     office_appearance::OfficeSignatureAppearance,
-    office_visible_opc::OfficeImagePlacement,
+    office_visible_opc::{OfficeImagePlacement, parse_excel_cell_anchor},
     office_visible_sign::sign_with_visible_appearance,
     opc_native::verify_opc_inprocess,
 };
@@ -13,13 +13,19 @@ fn run() -> Result<(), String> {
     let source=PathBuf::from(args.next().ok_or("usage: office_visible_identity_smoke SOURCE OUTPUT THUMBPRINT")?);
     let output=PathBuf::from(args.next().ok_or("Missing output")?);
     let thumbprint=args.next().ok_or("Missing thumbprint")?.to_string_lossy().to_string();
+    let excel_anchor = args.next().map(|s| s.to_string_lossy().to_string());
     if args.next().is_some() {return Err("Unexpected arguments".into());}
     let root=PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target").canonicalize().map_err(|e|e.to_string())?;
     let absolute=source.canonicalize().map_err(|e|e.to_string())?;
     if !absolute.starts_with(&root) {return Err("Synthetic core/target fixture required".into());}
     let placement=match source.extension().and_then(|x|x.to_str()).unwrap_or("") {
-        "docx"=>OfficeImagePlacement::WordDocumentEnd,
-        "xlsx"=>OfficeImagePlacement::ExcelCell{column:4,row:1},
+        "docx" => {
+            if excel_anchor.is_some() {
+                return Err("Excel cell argument is not allowed for DOCX".into());
+            }
+            OfficeImagePlacement::WordDocumentEnd
+        },
+        "xlsx" => parse_excel_cell_anchor(excel_anchor.as_deref().unwrap_or("E2"))?,
         _=>return Err("Not DOCX/XLSX".into())
     };
     let appearance=OfficeSignatureAppearance::default();
