@@ -42,6 +42,17 @@ def rewrite_zip(source: Path, dest: Path, kind: str, ext: str) -> None:
         entries["../not-allowed.txt"] = b"do not extract"
     elif kind == "unsupported_compression":
         pass
+    elif kind in ("signature_relationship", "signature_relationship_encoded"):
+        suffix = ("digital&#45;signature/origin" if kind.endswith("_encoded")
+                  else "digital-signature/origin")
+        rel = (f'<Relationship Id="rIdFakeSignature" '
+               f'Type="http://schemas.openxmlformats.org/package/2006/relationships/{suffix}" '
+               f'Target="obscure-signature-location.bin"/>').encode()
+        entries = inject_xml(entries, "_rels/.rels", b"</Relationships>", rel)
+    elif kind == "signature_content_type":
+        override = (b'<Override PartName="/obscure-signature-location.bin" '
+                    b'ContentType="application/vnd.openxmlformats-package.digital-signature-origin"/>')
+        entries = inject_xml(entries, "[Content_Types].xml", b"</Types>", override)
     elif kind == "xml_doctype":
         name = "word/document.xml" if ext == "docx" else "xl/worksheets/sheet1.xml"
         entries[name] = b'<!DOCTYPE root [<!ENTITY test "bad">]>' + entries[name]
@@ -95,7 +106,8 @@ def main():
         if not source.is_file():
             raise FileNotFoundError(source)
         case_ids = ["duplicate_zip_name", "path_traversal", "unsupported_compression",
-                    "xml_doctype", "broken_content_types"]
+                    "xml_doctype", "broken_content_types", "signature_relationship",
+                    "signature_relationship_encoded", "signature_content_type"]
         if ext == "xlsx":
             case_ids += ["worksheet_drawing_unprefixed", "worksheet_drawing_prefixed"]
         src_signed = SIGNED / f"CertificateBoundAppearance-Signed.{ext}"
