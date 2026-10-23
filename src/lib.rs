@@ -3,6 +3,8 @@
 pub mod format_contract;
 #[cfg(windows)]
 pub mod opc_native;
+#[cfg(windows)]
+mod opc_zip;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Provider {
     WindowsCng,
