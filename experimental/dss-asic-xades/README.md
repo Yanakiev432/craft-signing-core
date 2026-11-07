@@ -59,3 +59,16 @@ Both modes send raw SignedInfo bytes to the sidecar, receive raw RSA-SHA256 sign
 Tests: 2/2 external temporary PKCS#12 DOCX/XLSX positive, 2/2 Windows RSACng DOCX/XLSX positive, 5/5 Windows signer guardrail tests, 4/4 XAdES original/tampered Windows tests. No B-Trust PIN or hardware operation took place. See docs/EXTERNAL_SIGNER_QA_20261107.md.
 
 Not production-ready: provider-owner PIN workflow, EU Trusted List/QSCD validation, trusted timestamp, UI integration, and trusted installer code signing remain open.
+
+
+## Owner-present B-Trust hardware signing QA: compiled, NOT run
+
+The sidecar also contains an experimental B-Trust-specific owner-present path in sidecar/OwnerPresentBTrustQaSigner.cs. It is separate from automated software tests. The hardware path is NEVER called by the normal QA modes.
+
+Before any Windows private-key operation, the sidecar requires an exact selected public certificate SHA-1 thumbprint and DER SHA-256, current validity, a B-Trust Operational Qualified CA issuer, QCStatements, ASN.1 CertificatePolicies containing QCP-n-qscd (0.4.0.194112.1.2), a successful online Windows X509Chain, the exact anonymous input filename QES_QA_UNSIGNED_ORIGINAL.docx or .xlsx and unchanged source SHA-256. It then displays an explicit Windows owner confirmation dialog; only after the owner accepts does it call GetRSAPrivateKey and RSA SHA256 SignData, leaving the PIN UI entirely with the provider.
+
+An opt-in PowerShell launcher at the root of the Lenovo DSS-QA-20261107 directory uses Windows X509Certificate2UI.SelectFromCollection with SingleSelection. It never chooses a B-Trust certificate automatically. Manual launchers are Run-BTrust-WordCraft-QA.cmd and Run-BTrust-GridCraft-QA.cmd. These were NOT executed during development.
+
+Compilation of both Java and .NET paths PASS. Negative local-certificate and invalid-authorization tests PASS, no output and no PIN. A read-only Windows public preflight (no private-key access) found two B-Trust candidates, QCP-n-qscd policy 2/2, and Windows online chain 2/2. The real B-Trust provider signature and independent eIDAS QES validation remain UNTESTED.
+
+The exported B-Trust certificate used for QA would be public only; no P12/PFX or PIN is ever written. Detailed gates: docs/OWNER_PRESENT_BTRUST_QA_20261107.md.
