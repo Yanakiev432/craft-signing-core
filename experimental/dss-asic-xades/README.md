@@ -6,7 +6,7 @@ The experimental second Office signing mode wraps the unchanged DOCX/XLSX binary
 
 ## Security boundary
 
-The bridge never opens Windows CurrentUser certificates and never invokes MS-CAPI. A direct MS-CAPI experiment was abandoned after a 185-second timeout, with no signed file. This proof-of-concept accepts only a disposable PKCS#12 whose self-issued subject contains CN=Craft Open Source Disposable XAdES QA Only. All real B-Trust certificates are rejected by design. Its password is read from the local DSS_QA_PKCS12_PASSWORD environment variable, never from CLI arguments or the repository.
+The original direct DSS MS-CAPI-token enumeration experiment timed out after 185 seconds. The separate .NET 8 sidecar now has two isolated and strictly restricted test paths: a disposable PKCS#12 test key, or the exact self-issued local Craft software certificate in Windows CurrentUser/My. The Java component never loads a private key or reads the disposable key password. The .NET helper refuses every other certificate, including B-Trust. The local store test certificate was identified as RSACng with a 3072-bit RSA key.
 
 Commands:
 - --self-test : verifies the Java entrypoint.
@@ -42,3 +42,20 @@ The proof-of-concept does NOT issue or establish an eIDAS-qualified electronic s
 
 DSS documentation: https://ec.europa.eu/digital-building-blocks/DSS/webapp-demo/doc/dss-documentation.html
 DSS core licensing: LGPL-2.1; preserve notices and comply with dependencies' licenses before distribution.
+
+
+## External Windows software provider, no B-Trust access (2026-11-07)
+
+The tested separate process is implemented in sidecar/Program.cs, compiled with .NET 8.
+The Java bridge is src/main/java/org/craftopensource/eidasqa/CraftExternalDssQa.java.
+
+Two QA commands are available:
+
+- CraftExternalDssQa --sign-external-test: accepts one disposable self-issued PKCS#12 and a public certificate. Only the .NET child process reads the ephemeral password.
+- CraftExternalDssQa --sign-windows-local-test: accepts one explicitly selected self-issued Craft Open Source Local Code Signing software certificate. Its Windows CurrentUser/My private key is RSACng and is not exported. All other certificates are refused.
+
+Both modes send raw SignedInfo bytes to the sidecar, receive raw RSA-SHA256 signature bytes, independently check the signature against the selected public certificate, and reject modified or colliding inputs. A complete ASiC-S XAdES Baseline-B is created and verified before publishing new output.
+
+Tests: 2/2 external temporary PKCS#12 DOCX/XLSX positive, 2/2 Windows RSACng DOCX/XLSX positive, 5/5 Windows signer guardrail tests, 4/4 XAdES original/tampered Windows tests. No B-Trust PIN or hardware operation took place. See docs/EXTERNAL_SIGNER_QA_20261107.md.
+
+Not production-ready: provider-owner PIN workflow, EU Trusted List/QSCD validation, trusted timestamp, UI integration, and trusted installer code signing remain open.
