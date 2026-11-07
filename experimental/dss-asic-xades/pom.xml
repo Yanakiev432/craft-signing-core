@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+ <modelVersion>4.0.0</modelVersion>
+ <groupId>org.craftopensource.qa</groupId>
+ <artifactId>craft-eidas-dss-bridge</artifactId>
+ <version>0.1.0-QA</version>
+ <packaging>jar</packaging>
+ <properties><maven.compiler.release>17</maven.compiler.release><project.build.sourceEncoding>UTF-8</project.build.sourceEncoding></properties>
+ <dependencies>
+  <dependency><groupId>eu.europa.ec.joinup.sd-dss</groupId><artifactId>dss-asic-xades</artifactId><version>6.5.1</version></dependency>
+  <dependency><groupId>eu.europa.ec.joinup.sd-dss</groupId><artifactId>dss-token</artifactId><version>6.5.1</version></dependency>
+  <dependency><groupId>eu.europa.ec.joinup.sd-dss</groupId><artifactId>dss-document</artifactId><version>6.5.1</version></dependency>
+  <dependency><groupId>eu.europa.ec.joinup.sd-dss</groupId><artifactId>dss-validation</artifactId><version>6.5.1</version></dependency>
+  <dependency><groupId>eu.europa.ec.joinup.sd-dss</groupId><artifactId>dss-utils-apache-commons</artifactId><version>6.5.1</version></dependency>
+  <dependency><groupId>eu.europa.ec.joinup.sd-dss</groupId><artifactId>dss-policy-jaxb</artifactId><version>6.5.1</version></dependency>
+ </dependencies>
+ <build><plugins>
+  <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-compiler-plugin</artifactId><version>3.14.1</version><configuration><release>17</release></configuration></plugin>
+  <plugin><groupId>org.codehaus.mojo</groupId><artifactId>exec-maven-plugin</artifactId><version>3.6.2</version></plugin>
+ </plugins></build>
+</project>
