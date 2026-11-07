@@ -34,8 +34,9 @@ import java.util.concurrent.TimeUnit;
  * Demonstrates DSS -> raw ToBeSigned -> separate signing process -> DSS ASiC.
  * This QA class supports a disposable PKCS#12 test and one strictly
  * pinned local self-signed Windows CurrentUser/My software certificate.
- * It rejects B-Trust and all other real user or qualified keys.
- * It does not yet constitute qualified CSP/QSCD production integration.
+ * An additional owner-present hardware QA mode, never invoked by automated
+ * tests, requires a B-Trust public certificate and a second human Windows
+ * confirmation before any provider PIN UI. No qualified validation is implied.
  */
 public final class CraftExternalDssQa {
     private static final X500Principal ONLY_ALLOWED_TEST_ID = new X500Principal(
@@ -44,6 +45,7 @@ public final class CraftExternalDssQa {
         "CN=Craft Open Source Local Code Signing");
     private static final String HELPER_FLAG = "CRAFT_DSS_DISPOSABLE_SOFTWARE_TEST_ONLY_V1";
     private static final String WINDOWS_LOCAL_HELPER_FLAG = "CRAFT_WINDOWS_LOCAL_SELF_SIGNED_QA_V1";
+    private static final String BTRUST_OWNER_HELPER_FLAG = "CRAFT_OWNER_PRESENT_BTRUST_HARDWARE_QA_V1";
     private CraftExternalDssQa() {}
 
     public static void main(String[] args) throws Exception {
@@ -53,18 +55,23 @@ public final class CraftExternalDssQa {
         boolean windowsLocal = args.length == 6
             && args[0].equals("--sign-windows-local-test")
             && args[5].equals("--strict-windows-test-only");
-        if (!disposable && !windowsLocal) {
+        boolean ownerPresentBTrust = args.length == 6
+            && args[0].equals("--sign-btrust-owner-qa")
+            && args[5].equals("--owner-confirmation-required");
+        if (!disposable && !windowsLocal && !ownerPresentBTrust) {
             throw new IllegalArgumentException(
-                "Only two isolated test modes: --sign-external-test or --sign-windows-local-test");
+                "Supported: disposable QA, local Windows QA, or explicitly owner-confirmed B-Trust QA");
         }
         Path source = Path.of(args[1]).toRealPath(LinkOption.NOFOLLOW_LINKS);
         Path destination = Path.of(args[2]).toAbsolutePath().normalize();
         Path publicCert = Path.of(args[3]).toRealPath(LinkOption.NOFOLLOW_LINKS);
         Path testP12 = disposable
             ? Path.of(args[4]).toRealPath(LinkOption.NOFOLLOW_LINKS) : null;
-        String windowsThumbprint = windowsLocal ? args[4].toUpperCase(Locale.ROOT) : null;
-        if (windowsLocal && !windowsThumbprint.matches("[0-9A-F]{40}")) {
-            throw new IllegalArgumentException("Only explicit selected software test SHA1 thumbprint allowed");
+        String windowsThumbprint = (windowsLocal || ownerPresentBTrust)
+            ? args[4].toUpperCase(Locale.ROOT) : null;
+        if ((windowsLocal || ownerPresentBTrust)
+                && !windowsThumbprint.matches("[0-9A-F]{40}")) {
+            throw new IllegalArgumentException("Exactly one 40-hex selected certificate thumbprint required");
         }
 
         String name = source.getFileName().toString().toLowerCase(Locale.ROOT);
@@ -100,15 +107,31 @@ public final class CraftExternalDssQa {
                 .generateCertificate(stream);
         }
         certificate.checkValidity();
-        X500Principal expectedTestIdentity = windowsLocal
-            ? WINDOWS_LOCAL_TEST_ID : ONLY_ALLOWED_TEST_ID;
-        if (!certificate.getSubjectX500Principal().equals(expectedTestIdentity)
-                || !certificate.getIssuerX500Principal().equals(expectedTestIdentity)) {
-            throw new SecurityException("Real user/B-Trust certificates are forbidden in all QA modes");
+        if (ownerPresentBTrust) {
+            // This is NOT invoked by automated tests and may only be run with
+            // the owner physically confirming the Windows MessageBox + provider PIN.
+            String issuer = certificate.getIssuerX500Principal().getName().toLowerCase(Locale.ROOT);
+            if (!source.getFileName().toString().equals("QES_QA_UNSIGNED_ORIGINAL.docx")
+                    && !source.getFileName().toString().equals("QES_QA_UNSIGNED_ORIGINAL.xlsx")) {
+                throw new SecurityException("Owner-present hardware signing accepts anonymous QA fixtures ONLY");
+            }
+            if (!issuer.contains("b-trust") || !issuer.contains("operational qualified ca")
+                    || certificate.getSubjectX500Principal()
+                        .equals(certificate.getIssuerX500Principal())
+                    || certificate.getExtensionValue("1.3.6.1.5.5.7.1.3") == null) {
+                throw new SecurityException("B-Trust qualified public certificate preflight refused");
+            }
+        } else {
+            X500Principal expectedTestIdentity = windowsLocal
+                ? WINDOWS_LOCAL_TEST_ID : ONLY_ALLOWED_TEST_ID;
+            if (!certificate.getSubjectX500Principal().equals(expectedTestIdentity)
+                    || !certificate.getIssuerX500Principal().equals(expectedTestIdentity)) {
+                throw new SecurityException("Real certificates are forbidden in software QA modes");
+            }
+            certificate.verify(certificate.getPublicKey());
         }
-        certificate.verify(certificate.getPublicKey());
         if (!"RSA".equals(certificate.getPublicKey().getAlgorithm())) {
-            throw new SecurityException("Only software QA RSA supported");
+            throw new SecurityException("Only explicitly selected RSA certificates supported");
         }
 
         byte[] originalSha256 = MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(source));
@@ -136,21 +159,28 @@ public final class CraftExternalDssQa {
             Path signatureOut = session.resolve("signature.bin");
             Files.write(payload, data.getBytes());
 
-            ProcessBuilder command = windowsLocal
+            ProcessBuilder command = ownerPresentBTrust
                 ? new ProcessBuilder(
-                    dotnet.toString(), signer.toString(), "--sign-windows-local-test",
+                    dotnet.toString(), signer.toString(), "--sign-btrust-owner-qa",
                     windowsThumbprint, payload.toString(), signatureOut.toString(),
-                    certHash, WINDOWS_LOCAL_HELPER_FLAG)
-                : new ProcessBuilder(
-                    dotnet.toString(), signer.toString(), "--sign-disposable",
-                    testP12.toString(), payload.toString(), signatureOut.toString(),
-                    certHash, HELPER_FLAG);
+                    certHash, source.toString(),
+                    HexFormat.of().formatHex(originalSha256), BTRUST_OWNER_HELPER_FLAG)
+                : windowsLocal
+                    ? new ProcessBuilder(
+                        dotnet.toString(), signer.toString(), "--sign-windows-local-test",
+                        windowsThumbprint, payload.toString(), signatureOut.toString(),
+                        certHash, WINDOWS_LOCAL_HELPER_FLAG)
+                    : new ProcessBuilder(
+                        dotnet.toString(), signer.toString(), "--sign-disposable",
+                        testP12.toString(), payload.toString(), signatureOut.toString(),
+                        certHash, HELPER_FLAG);
             command.directory(session.toFile());
             command.redirectErrorStream(true);
             command.redirectOutput(session.resolve("helper-output.log").toFile());
-            // The helper inherits the disposable test password; no real user PIN.
+            // The B-Trust mode requires a real owner-present confirmation;
+            // only the selected native Windows provider is allowed to request PIN.
             Process process = command.start();
-            if (!process.waitFor(45, TimeUnit.SECONDS)) {
+            if (!process.waitFor(ownerPresentBTrust ? 200 : 45, TimeUnit.SECONDS)) {
                 process.descendants().forEach(ProcessHandle::destroyForcibly);
                 process.destroyForcibly();
                 process.waitFor(5, TimeUnit.SECONDS);
@@ -180,9 +210,11 @@ public final class CraftExternalDssQa {
             Files.createLink(destination, stage);
             System.out.println("EXTERNAL_XADES_SIGNING_BRIDGE_QA_PASS");
             System.out.println("EXTERNAL_KEY_USED_BY_DSS=false");
-            System.out.println("EXTERNAL_PROVIDER=" + (windowsLocal
-                ? "WINDOWS_USER_STORE_LOCAL_SELF_SIGNED_TEST"
-                : "DISPOSABLE_PKCS12_SOFTWARE_TEST"));
+            System.out.println("EXTERNAL_PROVIDER=" + (ownerPresentBTrust
+                ? "OWNER_PRESENT_BTRUST_QA_NOT_QUALIFIED_VALIDATED"
+                : windowsLocal
+                    ? "WINDOWS_USER_STORE_LOCAL_SELF_SIGNED_TEST"
+                    : "DISPOSABLE_PKCS12_SOFTWARE_TEST"));
             System.out.println("TEST_ONLY_NOT_BTRUST_NOT_QES=true");
         } finally {
             try (DirectoryStream<Path> ds = Files.newDirectoryStream(session)) {
