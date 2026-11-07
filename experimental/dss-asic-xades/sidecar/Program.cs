@@ -19,6 +19,15 @@ internal static class Program
             {
                 return SignWindowsLocalTest(args);
             }
+            if (args.Length == 8 && args[0] == "--sign-btrust-owner-qa")
+            {
+                // No automatic B-Trust key operation; owner must approve Windows UI.
+                return OwnerPresentBTrustQaSigner.Run(args);
+            }
+            if (args.Length == 1 && args[0] == "--btrust-public-preflight")
+            {
+                return OwnerPresentBTrustQaSigner.PublicPreflight();
+            }
             if (args.Length != 6 || args[0] != "--sign-disposable"
                 || args[5] != ExpectedLabel)
             {
