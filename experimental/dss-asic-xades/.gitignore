@@ -1,0 +1,17 @@
+# Exclude all private keys, secrets and local generated test artifacts.
+**/*.p12
+**/*.pfx
+**/*.key
+**/*.jks
+**/*.keystore
+**/*.asics
+**/*.asice
+**/*.docx
+**/*.xlsx
+**/*.log
+**/target/
+**/outputs/
+**/.m2/
+**/secrets/
+**/*password*
+**/*secret*
