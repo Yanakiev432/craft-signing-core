@@ -19,7 +19,9 @@ param(
     [string]$OutputFile,
     [string]$CertificateThumbprint,
     # In-memory test identity for disposable fixtures; never used by app CLIs.
-    [System.Security.Cryptography.X509Certificates.X509Certificate2]$DevelopmentCertificate
+    [System.Security.Cryptography.X509Certificates.X509Certificate2]$DevelopmentCertificate,
+    [ValidateSet('allow','restrict')]
+    [string]$AdditionalSignatures = 'allow'
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -61,11 +63,62 @@ function Read-SignatureState([System.IO.Packaging.Package]$Package, [string]$Ext
     $covered = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
     $generatedSignatureParts = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
     [void]$generatedSignatureParts.Add($manager.SignatureOrigin.OriginalString)
+    # These are the two *exact* mutable signature-container relationship
+    # parts. Their signer additions are authenticated separately through the
+    # package's digital-signature origin; document and worksheet parts remain
+    # required to be signed.
+    $root = [Uri]::new('/',[UriKind]::Relative)
+    [void]$generatedSignatureParts.Add(
+        [System.IO.Packaging.PackUriHelper]::GetRelationshipPartUri($root).OriginalString)
+    [void]$generatedSignatureParts.Add(
+        [System.IO.Packaging.PackUriHelper]::GetRelationshipPartUri($manager.SignatureOrigin).OriginalString)
     foreach ($signature in $manager.Signatures) {
         foreach ($partUri in $signature.SignedParts) { [void]$covered.Add($partUri.OriginalString) }
         # Exclude only the *exact* OPC signature blobs we know about, not an
         # entire directory whose contents might be attacker-supplied.
         [void]$generatedSignatureParts.Add($signature.SignaturePart.Uri.OriginalString)
+    }
+    # OPC relationship parts are intentionally not signed as raw bytes:
+    # they are changeable when a second signer adds their own signature.
+    # Instead require that EVERY non-signature relationship of the package
+    # is covered by an explicit relationship selector in EVERY signature.
+    $uncoveredRelationships = @()
+    $sources = @([pscustomobject]@{
+        Uri = [Uri]::new('/',[UriKind]::Relative)
+        Relationships = @($Package.GetRelationships())
+    })
+    foreach ($part in $Package.GetParts()) {
+        if ($generatedSignatureParts.Contains($part.Uri.OriginalString)) { continue }
+        if ([System.IO.Packaging.PackUriHelper]::IsRelationshipPartUri($part.Uri)) { continue }
+        $sources += [pscustomobject]@{ Uri = $part.Uri; Relationships = @($part.GetRelationships()) }
+    }
+    foreach ($source in $sources) {
+        $rels = @($source.Relationships | Where-Object {
+            $_.RelationshipType -ne [System.IO.Packaging.PackageDigitalSignatureManager]::SignatureOriginRelationshipType
+        })
+        if ($rels.Count -eq 0) { continue }
+        $allSigned = $true
+        foreach ($signature in $manager.Signatures) {
+            foreach ($rel in $rels) {
+                $protected = $false
+                foreach ($selector in $signature.SignedRelationshipSelectors) {
+                    if ($selector.SourceUri.OriginalString -ne $source.Uri.OriginalString) { continue }
+                    if (($selector.SelectorType -eq [System.IO.Packaging.PackageRelationshipSelectorType]::Id -and $selector.SelectionCriteria -eq $rel.Id) -or
+                        ($selector.SelectorType -eq [System.IO.Packaging.PackageRelationshipSelectorType]::Type -and $selector.SelectionCriteria -eq $rel.RelationshipType)) {
+                        $protected = $true
+                        break
+                    }
+                }
+                if (-not $protected) {
+                    $allSigned = $false
+                    $uncoveredRelationships += ($source.Uri.OriginalString + ':' + $rel.Id)
+                }
+            }
+        }
+        if ($allSigned) {
+            [void]$generatedSignatureParts.Add(
+                [System.IO.Packaging.PackUriHelper]::GetRelationshipPartUri($source.Uri).OriginalString)
+        }
     }
     $missing = @()
     foreach ($part in $Package.GetParts()) {
@@ -73,7 +126,7 @@ function Read-SignatureState([System.IO.Packaging.Package]$Package, [string]$Ext
         if ($generatedSignatureParts.Contains($uri)) { continue }
         if (-not $covered.Contains($uri)) { $missing += $uri }
     }
-    $ok = $verdict -eq [System.IO.Packaging.VerifyResult]::Success -and $missing.Count -eq 0
+    $ok = $verdict -eq [System.IO.Packaging.VerifyResult]::Success -and $missing.Count -eq 0 -and $uncoveredRelationships.Count -eq 0
     [pscustomobject]@{
         schema = 'craft.opc.xml-dsig.validation.v1'
         file_type = $Ext.TrimStart('.')
@@ -81,6 +134,7 @@ function Read-SignatureState([System.IO.Packaging.Package]$Package, [string]$Ext
         signature_count = $count
         signature_integrity = $verdict.ToString()
         unsigned_content_parts = @($missing)
+        uncovered_relationships = @($uncoveredRelationships)
         signed_parts_count = $covered.Count
         integrity_pass = [bool]$ok
         issuer_trust = 'NOT_EVALUATED'
@@ -94,7 +148,7 @@ $inputPath = [IO.Path]::GetFullPath($InputFile)
 $ext = [IO.Path]::GetExtension($inputPath).ToLowerInvariant()
 if ($ext -notin @('.docx','.xlsx')) { throw 'Only OPC DOCX and XLSX are supported' }
 if ($Mode -eq 'verify') {
-    if ($OutputFile -or $CertificateThumbprint -or $DevelopmentCertificate) { throw 'Verify mode accepts no signing/output parameters' }
+    if ($OutputFile -or $CertificateThumbprint -or $DevelopmentCertificate -or $PSBoundParameters.ContainsKey('AdditionalSignatures')) { throw 'Verify mode accepts no signing/output parameters' }
     $package = [System.IO.Packaging.Package]::Open($inputPath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
     try {
         $state = Read-SignatureState -Package $package -Ext $ext
@@ -137,20 +191,63 @@ try {
     $package = [System.IO.Packaging.Package]::Open($stage,[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
     try {
         $main = Inspect-OfficePackage -Package $package -Ext $ext
+        # Craft-only signed policy: not a standardized Microsoft Office
+        # read-only restriction. No keys are exported or extra signing keys used.
+        $policyUri = [Uri]::new('/craft/signature-policy.xml',[UriKind]::Relative)
+        $policyLocked = '<craft:signaturePolicy xmlns:craft="urn:craft:signing:policy:v1" allowAdditionalSignatures="false"/>'
+        if ($package.PartExists($policyUri)) {
+            $part = $package.GetPart($policyUri)
+            $reader = [IO.StreamReader]::new($part.GetStream([IO.FileMode]::Open,[IO.FileAccess]::Read),[Text.Encoding]::UTF8)
+            try { $policyValue = $reader.ReadToEnd() } finally { $reader.Dispose() }
+            if ($policyValue -eq $policyLocked) {
+                throw 'This document forbids additional signatures in Craft'
+            }
+            throw 'Unknown Craft signing policy: refusing to change an already signed document'
+        }
         $manager = [System.IO.Packaging.PackageDigitalSignatureManager]::new($package)
-        if ($manager.Signatures.Count -gt 0) { throw 'Already signed package: counter-signing requires a separate review' }
+        if ($AdditionalSignatures -eq 'restrict') {
+            if ($manager.Signatures.Count -gt 0) {
+                throw 'Cannot retroactively lock an already signed OPC document'
+            }
+            $part = $package.CreatePart($policyUri,'application/vnd.craft.signing-policy+xml',[System.IO.Packaging.CompressionOption]::Normal)
+            $bytes = [Text.Encoding]::UTF8.GetBytes($policyLocked)
+            $stream = $part.GetStream([IO.FileMode]::Create,[IO.FileAccess]::Write)
+            try { $stream.Write($bytes,0,$bytes.Length) } finally { $stream.Dispose() }
+        }
+        if ($manager.Signatures.Count -gt 0) {
+            # The second signer must never inherit a malformed or incomplete
+            # first signature. Reopen and validate BEFORE attempting another.
+            $prior = Read-SignatureState -Package $package -Ext $ext
+            if (-not $prior.integrity_pass) { throw 'Refusing an additional signature: previous OPC signature is invalid' }
+        }
         $manager.CertificateOption = [System.IO.Packaging.CertificateEmbeddingOption]::InSignaturePart
         $manager.HashAlgorithm = 'http://www.w3.org/2001/04/xmlenc#sha256'
         $signedParts = New-Object 'System.Collections.Generic.List[System.Uri]'
-        foreach ($part in $package.GetParts()) { $signedParts.Add($part.Uri) }
-        # The OPC package signature origin and package-relationship parts are created
-        # during Sign(). Sign all existing content plus the relationship additions
-        # mandated in the official WindowsBase reference algorithm.
+        $selectors = New-Object 'System.Collections.Generic.List[System.IO.Packaging.PackageRelationshipSelector]'
         $origin = $manager.SignatureOrigin
-        $signedParts.Add($origin)
-        $signedParts.Add([System.IO.Packaging.PackUriHelper]::GetRelationshipPartUri($origin))
-        $signedParts.Add([System.IO.Packaging.PackUriHelper]::GetRelationshipPartUri([Uri]::new('/',[UriKind]::Relative)))
-        $signature = $manager.Sign($signedParts,[System.Security.Cryptography.X509Certificates.X509Certificate]$cert)
+        $sigParts = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+        [void]$sigParts.Add($origin.OriginalString)
+        foreach ($previous in $manager.Signatures) { [void]$sigParts.Add($previous.SignaturePart.Uri.OriginalString) }
+
+        # Signature origin and its mutable relationship part are intentionally
+        # excluded: adding a second signer MUST NOT alter anything signed
+        # by the first. Sign actual content and stable individual relationships.
+        foreach ($part in $package.GetParts()) {
+            if ($sigParts.Contains($part.Uri.OriginalString)) { continue }
+            if ([System.IO.Packaging.PackUriHelper]::IsRelationshipPartUri($part.Uri)) { continue }
+            $signedParts.Add($part.Uri)
+            foreach ($rel in $part.GetRelationships()) {
+                $selectors.Add([System.IO.Packaging.PackageRelationshipSelector]::new(
+                    $part.Uri, [System.IO.Packaging.PackageRelationshipSelectorType]::Id, $rel.Id))
+            }
+        }
+        $rootUri = [Uri]::new('/', [UriKind]::Relative)
+        foreach ($rel in $package.GetRelationships()) {
+            if ($rel.RelationshipType -eq [System.IO.Packaging.PackageDigitalSignatureManager]::SignatureOriginRelationshipType) { continue }
+            $selectors.Add([System.IO.Packaging.PackageRelationshipSelector]::new(
+                $rootUri, [System.IO.Packaging.PackageRelationshipSelectorType]::Id, $rel.Id))
+        }
+        $signature = $manager.Sign($signedParts,[System.Security.Cryptography.X509Certificates.X509Certificate]$cert,$selectors)
         if ($null -eq $signature) { throw 'OPC provider did not produce a signature' }
     } finally { $package.Close() }
     $signedPackage = [System.IO.Packaging.Package]::Open($stage,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)

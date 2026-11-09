@@ -1,6 +1,17 @@
 //! Reusable contracts; production cryptography remains in format/provider adapters.
 //! OOXML signatures use OPC/XMLDSig, not PDF PAdES/CMS serialization.
 pub mod format_contract;
+pub mod office_appearance;
+#[cfg(windows)]
+pub mod office_visible_opc;
+#[cfg(windows)]
+pub mod office_appearance_render;
+#[cfg(windows)]
+pub mod office_visible_sign;
+#[cfg(windows)]
+pub mod opc_native;
+#[cfg(windows)]
+mod opc_zip;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Provider {
     WindowsCng,
@@ -150,6 +161,8 @@ mod tests {
         assert_ne!(result.integrity, result.chain_trust);
     }
 }
+#[cfg(target_os = "windows")]
+pub mod office_certificates;
 #[cfg(target_os = "windows")]
 pub mod opc_windows;
 #[cfg(target_os = "windows")]

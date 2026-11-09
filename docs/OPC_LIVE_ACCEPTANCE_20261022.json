@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-22",
+  "source": "Yanakiev-Lenovo / local Windows OPC API",
+  "branch": "feature/office-native-certificate-picker-20261021",
+  "baseline": "d829c4e",
+  "change": "Use OPC_CERTIFICATE_IN_SIGNATURE_PART to avoid separate certificate part failing strict document coverage on native self-verification.",
+  "positive_tests": [
+    {
+      "format": "DOCX",
+      "sign": "PASS",
+      "readback_signature_integrity": "PASS",
+      "signature_count": 1,
+      "sha256": "71365135A0664895F9C4D8EA30108C7EBB0C96A77DCD0881F55CAB1FA6084F2D"
+    },
+    {
+      "format": "XLSX",
+      "sign": "PASS",
+      "readback_signature_integrity": "PASS",
+      "signature_count": 1,
+      "sha256": "10E832C24CDC6D4210C290FED8ED9F59392333A5AFE9BAE9BFAAB2B715787002"
+    }
+  ],
+  "negative_tests": [
+    {
+      "case": "Extra unsigned XML part appended to signed DOCX",
+      "result": "REJECTED",
+      "hresult": "0x80096010",
+      "causal_stage": "All six original signed ZIP parts retain exactly the same SHA-256; the only new part is word/unlinked-extra.xml. OPC verification rejects the package.",
+      "original_part_hashes_unchanged": 6,
+      "newly_added_parts": 1
+    },
+    {
+      "case": "Signed XLSX worksheet content mutated",
+      "result": "REJECTED",
+      "hresult": "0x80096010",
+      "causal_stage": "Digest/integrity failure"
+    }
+  ],
+  "unit_tests": {
+    "total": 10,
+    "passed": 10
+  },
+  "integrations": {
+    "wordcraft_cargo_check": "PASS",
+    "gridcraft_cargo_check": "PASS",
+    "signed_documents_opened_in_Office": "NOT_TESTED",
+    "Office_visible_signature_line": "NOT_IMPLEMENTED"
+  },
+  "certificate": {
+    "purpose": "local development smoke only",
+    "subject": "CN=Craft Open Source Local Code Signing",
+    "private_key_exported": false,
+    "QES_qualified": false
+  },
+  "remaining_gates": [
+    "B-Trust qualified hardware-token signing with official PIN interface",
+    "Independent certificate chain and revocation validation through official EU trust lists",
+    "Office interoperability test in Word and Excel",
+    "Visible OOXML signature line if required",
+    "Release build of latest WordCraft and GridCraft GUI binaries"
+  ],
+  "fixtures": "target/opc-live-20261022-181013",
+  "conclusion": "Native in-process OPC integrity sign/verify passes on minimal DOCX and XLSX; qualification and interoperability remain unproven."
+}

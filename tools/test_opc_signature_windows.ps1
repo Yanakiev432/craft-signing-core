@@ -64,6 +64,52 @@ try {
         if(-not $result.integrity_pass){throw "$family produced invalid signature"}
         $verified = ((& $signer -Mode verify -InputFile $signed) | Out-String)| ConvertFrom-Json
         if(-not $verified.integrity_pass){throw "$family verification failed"}
+        # Two independent people must be able to sign consecutively without
+        # losing the first signer's cryptographic evidence.
+        $rsa2 = [System.Security.Cryptography.RSA]::Create(2048)
+        $cert2 = $null
+        try {
+            $request2 = [System.Security.Cryptography.X509Certificates.CertificateRequest]::new(
+                'CN=Craft second independent signer', $rsa2,
+                [System.Security.Cryptography.HashAlgorithmName]::SHA256,
+                [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
+            $cert2 = $request2.CreateSelfSigned([DateTimeOffset]::UtcNow.AddMinutes(-1),[DateTimeOffset]::UtcNow.AddHours(2))
+            $multi = Join-Path $ArtifactDirectory ("two-signers."+$family)
+            $global:LASTEXITCODE = 0
+            $multijson = (& $signer -Mode sign -InputFile $signed -OutputFile $multi -DevelopmentCertificate $cert2) | Out-String
+            if ($LASTEXITCODE -ne 0) { throw "$family second signer operation failed" }
+            $multiResult = $multijson | ConvertFrom-Json
+            if (-not $multiResult.integrity_pass -or $multiResult.signature_count -ne 2) {
+                throw "$family both signatures were not cryptographically accepted"
+            }
+            $check = ((& $signer -Mode verify -InputFile $multi) | Out-String) | ConvertFrom-Json
+            if ($check.signature_count -ne 2 -or -not $check.integrity_pass) {
+                throw "$family second signature invalidated first signer"
+            }
+            Write-Output ("OPC_TWO_INDEPENDENT_SIGNERS=PASS family=$family count=2")
+        } finally {
+            if ($cert2) { $cert2.Dispose() }
+            $rsa2.Dispose()
+        }
+        # The explicit opt-out creates a Craft-signed policy inside an otherwise
+        # unsigned fixture. Other Office editors are NOT contractually bound by
+        # Craft's policy, so this is not a Microsoft Office document lock.
+        $locked = Join-Path $ArtifactDirectory ("locked."+$family)
+        $next = Join-Path $ArtifactDirectory ("unwanted-additional."+$family)
+        $lockedResult = ((& $signer -Mode sign -InputFile $original -OutputFile $locked -DevelopmentCertificate $certificate -AdditionalSignatures restrict) | Out-String) | ConvertFrom-Json
+        if (-not $lockedResult.integrity_pass -or $lockedResult.signature_count -ne 1) {
+            throw "$family locked-policy fixture invalid"
+        }
+        $blocked = $false
+        try {
+            & $signer -Mode sign -InputFile $locked -OutputFile $next -DevelopmentCertificate $certificate | Out-Null
+        } catch {
+            $blocked = $_.Exception.Message.Contains('forbids additional signatures')
+        }
+        if (-not $blocked -or (Test-Path -LiteralPath $next)) {
+            throw "$family Craft-only signature policy failed to reject later signing"
+        }
+        Write-Output ("OPC_CRAFT_POLICY_LOCK=PASS family=$family")
         [IO.File]::Copy($signed,$tampered)
         $package=[System.IO.Packaging.Package]::Open($tampered,[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite)
         try {
@@ -73,6 +119,24 @@ try {
         } finally {$package.Close()}
         $negative = (& $signer -Mode verify -InputFile $tampered 2>&1) | Out-String
         if($LASTEXITCODE -eq 0){throw "$family tamper was incorrectly accepted: $negative"}
+        # Adding a package relationship after signing must not evade the
+        # selector-based multiple-signer integrity policy, even when no
+        # actual new OPC content part is introduced.
+        $uncoveredRelationship = Join-Path $ArtifactDirectory ("unsigned-relationship."+$family)
+        [IO.File]::Copy($signed,$uncoveredRelationship)
+        $tamperedPackage = [System.IO.Packaging.Package]::Open(
+            $uncoveredRelationship,[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite)
+        try {
+            [void]$tamperedPackage.CreateRelationship(
+                [Uri]::new('https://example.invalid/unsigned-addition',[UriKind]::Absolute),
+                [System.IO.Packaging.TargetMode]::External,
+                'urn:craft:unapproved-external-relationship')
+        } finally { $tamperedPackage.Close() }
+        $global:LASTEXITCODE=0
+        $rejectedRelationship=(& $signer -Mode verify -InputFile $uncoveredRelationship) | Out-String
+        if ($LASTEXITCODE -eq 0) {
+            throw "$family unsigned relationship was incorrectly accepted: $rejectedRelationship"
+        }
         # Adding an unprotected OPC part must also fail (even if the existing
         # XMLDSig cryptographic hash is unchanged).
         $extended = Join-Path $ArtifactDirectory ("unsigned-extra."+$family)
