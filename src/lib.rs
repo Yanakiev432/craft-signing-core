@@ -2,6 +2,12 @@
 //! OOXML signatures use OPC/XMLDSig, not PDF PAdES/CMS serialization.
 #[cfg(windows)]
 pub mod broker_protocol;
+#[cfg(windows)]
+pub mod signed_module;
+#[cfg(windows)]
+pub mod installed_broker;
+#[cfg(windows)]
+pub mod office_host;
 pub mod format_contract;
 pub mod office_appearance;
 #[cfg(windows)]
