@@ -67,3 +67,29 @@ verified-module resolver/host adapter wired to the native Review
 interfaces, with explicit owner trust approval and live GUI acceptance.
 No system trust store, installed host, token or publisher policy was
 changed during this QA.
+
+## Rust to signed .NET broker interoperability
+
+The opt-in test named
+rust_readonly_json_reaches_signed_dotnet_broker_then_fails_closed
+executes the **exact SHA-256-pinned, Authenticode-signed 0.2.2 QA broker
+binary** using the real document.verify JSON emitted by the Rust contract.
+It requires the opt-in CRAFT_SIGNER_DOTNET_V022_BROKER_EXE variable and
+refuses to run when a live publisher approval or installed module exists.
+
+The C# broker parsed a DOCX request and an XLSX request (including the
+same Rust-computed file hash and UUID). For both, it correctly returned
+PUBLISHER_NOT_APPROVED with the original UUID because no owner has
+approved the local publisher. An unknown JSON field produced
+UNKNOWN_FIELD. No worker was executed, no publisher policy was created,
+the synthetic Office documents were unchanged and the test exited 0.
+
+This deliberately proves protocol interoperability and fail-closed
+authorization, **not** an integrity PASS or installed-module operation.
+The test is ignored by default, so CI cannot count this local executable
+and unsigned source fixture as a normal unit-test dependency.
+
+Results on the authorized Windows test host:
+- 4/4 ordinary Office protocol tests PASS; full Rust lib 30/30 PASS.
+- 1/1 real signed broker cross-language opt-in test PASS.
+- Production Rust library cargo check --lib --offline PASS.

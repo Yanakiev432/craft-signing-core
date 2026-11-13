@@ -456,4 +456,115 @@ mod tests {
         assert!(request.checked_reply(duplicate.as_bytes(), true).is_err());
         let _ = fs::remove_file(file);
     }
+
+    /// No real module may be installed or approved for this opt-in IPC QA.
+    /// This tests .NET BrokerLogic.Parse with Rust-produced JSON and checks
+    /// that publisher approval is a *hard boundary* before execution.
+    #[test]
+    #[ignore = "requires the exact locally Authenticode-signed 0.2.2 QA broker; no live approval"]
+    fn rust_readonly_json_reaches_signed_dotnet_broker_then_fails_closed() {
+        use std::{
+            io::Write,
+            process::{Command, Stdio},
+            thread,
+            time::{Duration, Instant},
+        };
+        let executable = PathBuf::from(
+            std::env::var_os("CRAFT_SIGNER_DOTNET_V022_BROKER_EXE")
+                .expect("set signed local 0.2.2 CraftSignerBroker.exe path"),
+        );
+        assert!(executable.is_absolute());
+        let mut binary = fs::File::open(&executable).expect("read signed fixture broker");
+        let mut digest = Sha256::new();
+        let mut buffer = [0_u8; 65_536];
+        loop {
+            let n = binary.read(&mut buffer).expect("hash signed QA broker");
+            if n == 0 {
+                break;
+            }
+            digest.update(&buffer[..n]);
+        }
+        let sha = format!("{:X}", digest.finalize());
+        assert_eq!(
+            sha, "65781B0E52E3529FBE7766C9FE103CC1724A07CA1EED8379BC1913AA1EEE9FBD",
+            "do not execute unapproved or a different broker executable"
+        );
+        drop(binary);
+
+        let user_local = std::env::var_os("LOCALAPPDATA").expect("Windows LOCALAPPDATA");
+        let root = PathBuf::from(user_local).join("Craft").join("Extensions");
+        let approval = root.join("_trust").join("org.craftopensource.signer.json");
+        let live_registration = root.join("org.craftopensource.signer").join("current.json");
+        assert!(
+            !approval.exists(),
+            "do not run if the owner approved a publisher"
+        );
+        assert!(
+            !live_registration.exists(),
+            "do not run with an installed live module"
+        );
+
+        fn invoke(executable: &Path, bytes: &[u8]) -> (bool, Value) {
+            let mut child = Command::new(executable)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("run the exact local signed QA broker");
+            {
+                let mut input = child.stdin.take().expect("signed broker stdin");
+                input.write_all(bytes).expect("write read-only broker IPC");
+            }
+            let start = Instant::now();
+            loop {
+                match child.try_wait().expect("check signed broker exit") {
+                    Some(_) => break,
+                    None if start.elapsed() > Duration::from_secs(15) => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        panic!("signed broker exceeded read-only QA timeout");
+                    }
+                    None => thread::sleep(Duration::from_millis(25)),
+                }
+            }
+            let result = child.wait_with_output().expect("read signed broker stdout");
+            assert!(
+                result.stdout.len() <= MAX_RESPONSE_BYTES,
+                "bounded broker reply"
+            );
+            (
+                result.status.success(),
+                serde_json::from_slice(&result.stdout).expect("broker JSON reply"),
+            )
+        }
+
+        for kind in [OfficeKind::Docx, OfficeKind::Xlsx] {
+            let file = fixture(kind);
+            let request = prepare_verify(&file, kind, false, ID).expect("saved synthetic Office");
+            let bytes = request.json_request().expect("Rust broker protocol bytes");
+            let (success, response) = invoke(&executable, &bytes);
+            assert!(!success, "broker must refuse unapproved user publisher");
+            assert_eq!(response["protocolMajor"], 1);
+            assert_eq!(
+                response["requestId"], ID,
+                "Rust request was parsed by C# broker"
+            );
+            assert_eq!(response["status"], "error");
+            assert_eq!(response["code"], "PUBLISHER_NOT_APPROVED");
+            request
+                .unchanged()
+                .expect("synthetic Office source unmodified");
+            let _ = fs::remove_file(file);
+        }
+
+        let broken = format!(
+            "{{\"protocolMajor\":1,\"requestId\":\"{ID}\",\"action\":\"document.verify\",\
+             \"document\":null,\"unexpectedField\":true}}"
+        );
+        let (success, response) = invoke(&executable, broken.as_bytes());
+        assert!(!success);
+        assert_eq!(response["code"], "UNKNOWN_FIELD");
+        assert!(!approval.exists(), "no user publisher approval created");
+        assert!(!live_registration.exists(), "no installed module created");
+    }
 }
