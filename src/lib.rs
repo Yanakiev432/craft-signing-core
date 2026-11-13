@@ -1,11 +1,13 @@
 //! Reusable contracts; production cryptography remains in format/provider adapters.
 //! OOXML signatures use OPC/XMLDSig, not PDF PAdES/CMS serialization.
+#[cfg(windows)]
+pub mod broker_protocol;
 pub mod format_contract;
 pub mod office_appearance;
 #[cfg(windows)]
-pub mod office_visible_opc;
-#[cfg(windows)]
 pub mod office_appearance_render;
+#[cfg(windows)]
+pub mod office_visible_opc;
 #[cfg(windows)]
 pub mod office_visible_sign;
 #[cfg(windows)]
