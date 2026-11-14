@@ -41,7 +41,7 @@ timestamp. No private key crosses the Rust broker IPC.
 
 ## Executed QA
 
-- 35/35 ordinary Rust library unit tests PASS; zero failed. Four special
+- 36/36 ordinary Rust library unit tests PASS; zero failed. Four special
   real-artifact tests are marked ignored for ordinary builds.
 - 4/4 real-artifact opt-in tests PASS using the exact separately signed
   Craft Signer 0.2.2 developer package, with independently calculated SPKI
@@ -80,7 +80,7 @@ authentication. This prevents activation of the known-defective old
 release even if current.json is pointed at its correctly signed folder.
 
 Executed acceptance:
-- 35/35 standard library unit tests PASS; 4 opt-in tests deliberately ignored
+- 36/36 standard library unit tests PASS; 4 opt-in tests deliberately ignored
   in the default CI/unit runner.
 - 4/4 real signed .NET package/CMS/broker cross-language opt-in tests PASS.
 - Minimum version parser: 0.2.1-qa and malformed versions rejected.
@@ -95,3 +95,18 @@ This is a host COMPATIBILITY FLOOR, not durable global anti-rollback for
 all future 0.2.3+ versions. The signed installer retains its independent
 atomic-version promotion and downgrade policy. This test used private
 temporary directories only; no live user approval policy was created.
+
+## Missing user module root acceptance — 14 November 2026
+
+When the Craft/Extensions directory does not exist in a fresh Windows
+profile, the shared host resolver now returns an explicit negative
+"Craft Signer is not installed with an approved publisher" verdict,
+instead of the ambiguous "Cannot inspect signer module path".
+Permission failures and redirected locations still fail closed.
+
+A new negative unit test verifies no module root or approval policy is
+created while diagnosing this condition. This change only improves a
+negative error path; it never grants trust or installs a module.
+
+Acceptance after change: 36/36 ordinary Rust tests PASS, 4/4 real signed
+package interop tests PASS, Clippy with -D warnings PASS.

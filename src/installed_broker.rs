@@ -207,6 +207,16 @@ fn verified_release_leaf(name: &str, catalog: &VerifiedCatalog) -> bool {
 /// tests can prove unsigned files, changed registrations and tampered workers
 /// never result in an executable being returned.
 fn resolve_under(root: &Path) -> Result<VerifiedInstalledBroker, String> {
+    // A fresh Windows profile may not even contain Craft/Extensions.
+    // Distinguish that normal missing-install case from a linked/unsafe
+    // module path. Both outcomes remain fail-closed; neither creates policy.
+    match fs::symlink_metadata(root) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Err("Craft Signer is not installed with an approved publisher".into());
+        }
+        Err(_) => return Err("Cannot inspect signer module path".into()),
+        Ok(_) => {}
+    }
     reject_reparse(root)?;
     let policy_path = root.join("_trust").join("org.craftopensource.signer.json");
     let owner: OwnerApproval = parse_json(&policy_path, 8192)
@@ -289,6 +299,18 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[test]
+    fn absent_windows_extensions_root_fails_closed_with_actionable_denial() {
+        let sandbox = tempfile::tempdir().expect("private temporary profile root");
+        let nonexistent = sandbox.path().join("Craft").join("Extensions");
+        let result = resolve_under(&nonexistent);
+        assert!(matches!(result, Err(ref message)
+            if message == "Craft Signer is not installed with an approved publisher"));
+        assert!(
+            !nonexistent.exists(),
+            "resolver must never create a user policy"
+        );
+    }
     #[test]
     fn host_rejects_v021_unsigned_pdf_parser_and_malformed_version() {
         for version in [
