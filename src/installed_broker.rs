@@ -166,6 +166,34 @@ fn parse_json<T: for<'a> Deserialize<'a>>(path: &Path, max: u64) -> Result<T, St
         .map_err(|_| "Malformed signer policy or current module registration".into())
 }
 
+/// Host-side floor independent of the installer's downgrade guard.
+///
+/// v0.2.1-qa has a known incorrect EU DSS unsigned-PDF classification and is
+/// not a supported module for native Office/PDF host verification.
+/// This is a *minimum compatible version*, not an anti-rollback mechanism for
+/// every future release; publisher policy and ModuleStore remain separate gates.
+fn supported_host_module_version(version: &str) -> bool {
+    let digits = version.split_once('-').map_or(version, |(head, _)| head);
+    let mut parts = digits.split('.');
+    let (Some(major), Some(minor), Some(patch), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return false;
+    };
+    let part = |s: &str| -> Option<u32> {
+        if s.is_empty()
+            || (s.len() > 1 && s.starts_with('0'))
+            || !s.bytes().all(|c| c.is_ascii_digit())
+        {
+            return None;
+        }
+        s.parse().ok()
+    };
+    match (part(major), part(minor), part(patch)) {
+        (Some(major), Some(minor), Some(patch)) => (major, minor, patch) >= (0, 2, 2),
+        _ => false,
+    }
+}
 fn verified_release_leaf(name: &str, catalog: &VerifiedCatalog) -> bool {
     let expected = format!(
         "{}-{}",
@@ -229,6 +257,9 @@ fn resolve_under(root: &Path) -> Result<VerifiedInstalledBroker, String> {
     let cms = bounded_public_file(&release.join("manifest.p7s"), 65_536)?;
     let public_cert = bounded_public_file(&release.join("publisher.cer"), 16_384)?;
     let catalog = verify_catalog(&manifest, &cms, &public_cert, &owner.key_sha256)?;
+    if !supported_host_module_version(&catalog.module_version) {
+        return Err("Craft Signer module version is below this host's supported minimum".into());
+    }
     if catalog.module_version != active.module_version || !verified_release_leaf(leaf, &catalog) {
         return Err("Signed catalog, active module version and release path disagree".into());
     }
@@ -258,6 +289,30 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[test]
+    fn host_rejects_v021_unsigned_pdf_parser_and_malformed_version() {
+        for version in [
+            "0.2.1-qa",
+            "0.2.0",
+            "0.1.999",
+            "0.02.2",
+            "0.2",
+            "not-semver",
+            "0.2.2.0",
+            "0.2.-1",
+        ] {
+            assert!(
+                !supported_host_module_version(version),
+                "{version} must fail"
+            );
+        }
+        for version in ["0.2.2-qa", "0.2.2", "0.2.3-qa", "0.3.0", "1.0.0"] {
+            assert!(
+                supported_host_module_version(version),
+                "{version} must pass"
+            );
+        }
+    }
     #[test]
     fn invalid_release_leaf_is_rejected() {
         let cat = VerifiedCatalog {
@@ -428,5 +483,144 @@ mod tests {
         let real = user.data_local_dir().join("Craft").join("Extensions");
         assert!(!extensions.starts_with(&real), "test root must not be live");
         // tempfile removes the entire synthetic approval and release tree.
+    }
+
+    /// Two independently signed .NET catalogs in one disposable release store.
+    /// Does not create or change any owner publisher policy or live installation.
+    #[test]
+    #[ignore = "requires local signed 0.2.1 + 0.2.2 packages and independently pinned publisher"]
+    fn real_signed_v021_to_v022_host_switch_refuses_old_release_and_locked_mutation() {
+        let old = PathBuf::from(
+            std::env::var_os("CRAFT_SIGNER_DOTNET_V021_ROOT")
+                .expect("set v0.2.1 signed QA repository root"),
+        );
+        let new = PathBuf::from(
+            std::env::var_os("CRAFT_SIGNER_DOTNET_V022_ROOT")
+                .expect("set v0.2.2 signed QA repository root"),
+        );
+        let pin = std::env::var("CRAFT_SIGNER_PUBLISHER_SPKI_SHA256")
+            .expect("independent developer public SPKI SHA-256 is required");
+        let temp = tempfile::tempdir().expect("private disposable module root");
+        let extensions = temp.path().join("Craft").join("Extensions");
+        let module = extensions.join(MODULE_ID);
+        let policy_dir = extensions.join("_trust");
+        fs::create_dir_all(&policy_dir).unwrap();
+        fs::write(
+            policy_dir.join("org.craftopensource.signer.json"),
+            serde_json::to_vec(&json!({
+                "schema":POLICY_SCHEMA,"moduleId":MODULE_ID,"keySha256":pin
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        // Real immutable manifests, detached signatures and all three
+        // executable bytes; never invoke a signing or installation entrypoint.
+        let copy_release = |source: &Path, expected_version: &str| -> String {
+            let pkg = source.join("ModuleV2").join("Package");
+            let manifest = fs::read(pkg.join("manifest.json")).unwrap();
+            let cms = fs::read(pkg.join("manifest.p7s")).unwrap();
+            let public_cert = fs::read(pkg.join("publisher.cer")).unwrap();
+            let catalog = verify_catalog(&manifest, &cms, &public_cert, &pin)
+                .expect("real source catalog must be cryptographically authenticated");
+            assert_eq!(catalog.module_version, expected_version);
+            let leaf = format!(
+                "{}-{}",
+                expected_version,
+                &format!("{:X}", Sha256::digest(&manifest))[..16]
+            );
+            let release = module.join("releases").join(&leaf);
+            fs::create_dir_all(&release).unwrap();
+            for (name, path) in [
+                ("manifest.json", pkg.join("manifest.json")),
+                ("manifest.p7s", pkg.join("manifest.p7s")),
+                ("publisher.cer", pkg.join("publisher.cer")),
+                (
+                    "craft-signer-broker.exe",
+                    source
+                        .join("ModuleV2")
+                        .join("Broker")
+                        .join("dist-local")
+                        .join("CraftSignerBroker.exe"),
+                ),
+                (
+                    "wordcraft-cli.exe",
+                    source.join("Bundles").join("wordcraft-cli.exe"),
+                ),
+                (
+                    "gridcraft-cli.exe",
+                    source.join("Bundles").join("gridcraft-cli.exe"),
+                ),
+            ] {
+                fs::copy(path, release.join(name)).expect("copy signed QA evidence");
+            }
+            leaf
+        };
+        let earlier = copy_release(&old, "0.2.1-qa");
+        let later = copy_release(&new, "0.2.2-qa");
+        assert_ne!(
+            earlier, later,
+            "separately signed releases have distinct hashes"
+        );
+
+        let current = module.join("current.json");
+        let write_registration = |leaf: &str, version: &str| {
+            let value = json!({
+                "moduleId":MODULE_ID,"moduleVersion":version,
+                "releaseDirectory":leaf,"publisherPublicKeySha256":pin,
+                "protocolMajor":1
+            });
+            fs::write(&current, serde_json::to_vec(&value).unwrap()).unwrap();
+        };
+        write_registration(&earlier, "0.2.1-qa");
+        assert!(
+            resolve_under(&extensions).is_err(),
+            "the host refuses known vulnerable signed v0.2.1 despite matching publisher"
+        );
+
+        write_registration(&later, "0.2.2-qa");
+        let locked =
+            resolve_under(&extensions).expect("newer signed v0.2.2 must be independently accepted");
+        assert_eq!(locked.verified_catalog().module_version, "0.2.2-qa");
+        let broker = locked.executable().to_owned();
+
+        // A locked handle must prevent replacing the authenticated broker
+        // between its SHA-256 check and the caller's eventual process start.
+        assert!(
+            fs::write(&broker, b"corrupt broker swap").is_err(),
+            "Windows share-mode file lock must block mutation of signed broker"
+        );
+
+        // An outside writer could change current.json after the handle is
+        // acquired. The existing handle remains pinned to the trusted v0.2.2
+        // path; a new resolver call must fail closed on the old version.
+        write_registration(&earlier, "0.2.1-qa");
+        assert_eq!(locked.executable(), broker.as_path());
+        assert!(
+            resolve_under(&extensions).is_err(),
+            "registration rollback must not activate old signed module"
+        );
+        drop(locked);
+
+        write_registration(&later, "0.2.2-qa");
+        assert!(
+            resolve_under(&extensions).is_ok(),
+            "restoring the new release works"
+        );
+        fs::write(&current, b"{incomplete registration").unwrap();
+        assert!(
+            resolve_under(&extensions).is_err(),
+            "partial registration fails closed"
+        );
+
+        let real_user = directories::BaseDirs::new()
+            .unwrap()
+            .data_local_dir()
+            .join("Craft")
+            .join("Extensions");
+        assert!(
+            !extensions.starts_with(&real_user),
+            "the synthetic approval never targets the real user's module root"
+        );
     }
 }

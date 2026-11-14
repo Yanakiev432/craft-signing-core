@@ -1,7 +1,7 @@
 # Craft Signer v2: independently authenticated native Office host adapter
 
 Date: 2026-11-13
-Status: source QA; not deployed to WordCraft, GridCraft or PdfCraft.
+Status: source QA; already consumed in separate WordCraft/GridCraft Review QA branches; not deployed to installed apps.
 
 ## Architecture
 
@@ -41,9 +41,9 @@ timestamp. No private key crosses the Rust broker IPC.
 
 ## Executed QA
 
-- 34/34 ordinary Rust library unit tests PASS; zero failed. Three special
+- 35/35 ordinary Rust library unit tests PASS; zero failed. Four special
   real-artifact tests are marked ignored for ordinary builds.
-- 3/3 real-artifact opt-in tests PASS using the exact separately signed
+- 4/4 real-artifact opt-in tests PASS using the exact separately signed
   Craft Signer 0.2.2 developer package, with independently calculated SPKI
   SHA-256 and source artifacts kept outside Git.
 - CMS signature verifies; altered manifest, CMS, public certificate and wrong
@@ -59,14 +59,39 @@ timestamp. No private key crosses the Rust broker IPC.
 
 ## Remaining deployment gates
 
-The trusted host adapter is not yet connected to the first-party Review
-ribbon in WordCraft and GridCraft. Their legacy craft.signer/1 fixed-worker
-slot is not a drop-in replacement for the new signed v2 module. The next
-phase is to consume this pinned shared library revision in separate host QA
-worktrees and add an optional Review command that invokes the native
-background adapter without replacing existing OPC sign/verify behavior.
+The trusted host adapter is integrated into the first-party Review QA
+branches for WordCraft and GridCraft. Their existing Sign and native Verify
+remain independent. The hosts must now consume this new minimum-supported
+release guard revision and repeat locked/offline compile and UI tests.
 
 The real end-to-end acceptance still needs owner GUI approval of the local
 developer key, registration of the signed 0.2.2 module, protected HTTPS EU
 DSS configuration for PDF, and authorized UI/headless testing. No test
 asserts a production QES PASS through the installed module.
+
+## Cross-version host resolver QA -- 14 November 2026
+
+The independently signed 0.2.1-qa and 0.2.2-qa package bytes were both
+cryptographically validated in a disposable Rust host release store.
+The 0.2.1-qa broker has a documented EU DSS unsigned-PDF parser defect;
+this library now enforces a minimum compatible module version of 0.2.2.
+The floor is validated only AFTER successful CMS publisher and catalog
+authentication. This prevents activation of the known-defective old
+release even if current.json is pointed at its correctly signed folder.
+
+Executed acceptance:
+- 35/35 standard library unit tests PASS; 4 opt-in tests deliberately ignored
+  in the default CI/unit runner.
+- 4/4 real signed .NET package/CMS/broker cross-language opt-in tests PASS.
+- Minimum version parser: 0.2.1-qa and malformed versions rejected.
+- Real 0.2.1 + 0.2.2 signed releases: new release accepted, rollback to the
+  older release refused even when its detached CMS signature is authentic.
+- Signed broker executable locked during verification: overwrite rejected.
+- Partial or corrupt active registration: fail closed.
+- Production library cargo check --lib --offline: PASS.
+- Production library cargo clippy --lib --offline -- -D warnings: PASS.
+
+This is a host COMPATIBILITY FLOOR, not durable global anti-rollback for
+all future 0.2.3+ versions. The signed installer retains its independent
+atomic-version promotion and downgrade policy. This test used private
+temporary directories only; no live user approval policy was created.
