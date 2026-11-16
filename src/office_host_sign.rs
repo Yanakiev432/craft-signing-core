@@ -33,6 +33,31 @@ const MAX_REQUEST: usize = 16_384;
 const MAX_RESPONSE: usize = 32_768;
 const SIGN_TIMEOUT: Duration = Duration::from_secs(340);
 
+/// The v0.2.2 signed broker predates the mandatory additional-signatures policy.
+/// Do not launch it for signing: a verified but incompatible binary is not sufficient.
+/// Verification can continue using an older module through its separate read-only path.
+fn broker_supports_explicit_office_sign_policy(version: &str) -> bool {
+    let numeric = version.split_once('-').map_or(version, |(head, _)| head);
+    let fields: Vec<_> = numeric.split('.').collect();
+    if fields.len() != 3 {
+        return false;
+    }
+    let mut parts = [0_u32; 3];
+    for (index, field) in fields.into_iter().enumerate() {
+        if field.is_empty()
+            || (field.len() > 1 && field.starts_with('0'))
+            || !field.bytes().all(|ch| ch.is_ascii_digit())
+        {
+            return false;
+        }
+        let Ok(value) = field.parse::<u32>() else {
+            return false;
+        };
+        parts[index] = value;
+    }
+    parts >= [0, 2, 3]
+}
+
 /// A kill-on-close Windows Job ensures the authenticated broker and any
 /// signing worker processes have one lifetime. A broker child is still
 /// waiting for stdin when assigned: no document.sign request can run first.
@@ -234,6 +259,9 @@ pub fn sign_office_via_installed_signer(
         return Err("Signing cancelled before module discovery".into());
     }
     let trusted = resolve_installed_broker()?;
+    if !broker_supports_explicit_office_sign_policy(&trusted.verified_catalog().module_version) {
+        return Err("Craft Signer 0.2.3 or newer is required for signed Office v2 signing; no signing attempted".into());
+    }
     intent.unchanged()?;
     if cancelled.load(Ordering::SeqCst) {
         return Err("Signing cancelled before broker execution".into());
@@ -255,6 +283,33 @@ pub fn sign_office_via_installed_signer(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn signed_office_v2_requires_explicit_policy_capable_broker_version() {
+        for old in [
+            "0.2.2-qa",
+            "0.2.2",
+            "0.2.1-qa",
+            "0.2.0",
+            "0.1.999",
+            "0.02.3",
+            "0.2",
+            "0.2.3.0",
+            "0.2.-3",
+            "not-semver",
+        ] {
+            assert!(
+                !broker_supports_explicit_office_sign_policy(old),
+                "incompatible signer {old} should be refused before IPC"
+            );
+        }
+        for compatible in ["0.2.3-qa", "0.2.3", "0.2.4", "0.3.0", "1.0.0"] {
+            assert!(
+                broker_supports_explicit_office_sign_policy(compatible),
+                "{compatible} should permit the protocol"
+            );
+        }
+    }
 
     #[test]
     fn sign_requires_explicit_consent_before_discovering_any_module() {
