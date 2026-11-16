@@ -295,6 +295,10 @@ fn resolve_under(root: &Path) -> Result<VerifiedInstalledBroker, String> {
 }
 
 #[cfg(test)]
+#[path = "installed_broker_v023_qa.rs"]
+mod v023_acceptance;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
