@@ -281,6 +281,10 @@ pub fn sign_office_via_installed_signer(
 }
 
 #[cfg(test)]
+#[path = "office_host_sign_job_qa.rs"]
+mod windows_job_qa;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
