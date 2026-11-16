@@ -269,6 +269,69 @@ mod tests {
         assert!(strict_manifest(br#"{"schema":"forged"}"#).is_err());
     }
 
+    /// Independent RustCrypto validation of the *new* developer-signed 0.2.3
+    /// package. Reads only public artifacts and executable bytes, never loads
+    /// or executes a worker and never opens a private signing key.
+    #[test]
+    #[ignore = "requires signed 0.2.3 QA public catalog and local accepted worker binaries"]
+    fn actual_dotnet_v023_catalog_and_three_payload_hashes_verify_independently() {
+        let root = PathBuf::from(
+            env::var_os("CRAFT_SIGNER_V023_QA_ROOT")
+                .expect("set CRAFT_SIGNER_V023_QA_ROOT to v0.2.3 source worktree"),
+        );
+        let package = root.join("ModuleV2").join("Package");
+        let manifest = fs::read(package.join("manifest.json")).expect("real v0.2.3 manifest");
+        let cms = fs::read(package.join("manifest.p7s")).expect("real signed v0.2.3 CMS");
+        let cert = fs::read(package.join("publisher.cer")).expect("publisher public DER");
+        // Public RSA SPKI identity was independently pinned in 0.2.2 acceptance.
+        const PUBLIC_SPKI: &str =
+            "E70FFDFAD52A79E3EDB3C0E1CC74694303109E0CA8C8849A51E5DCF5ED13E0AB";
+        let proof = verify_catalog(&manifest, &cms, &cert, PUBLIC_SPKI)
+            .expect("new .NET detached CMS accepted by independent RustCrypto");
+        assert_eq!(proof.module_version, "0.2.3-qa");
+        assert_eq!(proof.manifest_sha256, hex_digest(&manifest));
+        assert_eq!(proof.publisher_key_sha256, PUBLIC_SPKI);
+        const BROKER_SHA: &str = "300A25093A40C997CD45A5DC6AF4F40A63581EFF80BEEAC36EA6257651A9B4D5";
+        const WORD_SHA: &str = "3778AA69845E7E35159AE09CC303046554EDC3DBF12C216114A60585E811E9A6";
+        const GRID_SHA: &str = "E86AD51AED75D54C22B6847921EE805CB1889DB3CA96D467D59AA7616B8E4CA2";
+        assert_eq!(proof.broker_sha256, BROKER_SHA);
+        assert_eq!(proof.word_worker_sha256, WORD_SHA);
+        assert_eq!(proof.grid_worker_sha256, GRID_SHA);
+        let files = [
+            (
+                root.join("ModuleV2/Broker/dist-local/CraftSignerBroker.exe"),
+                BROKER_SHA,
+            ),
+            (root.join("Bundles/wordcraft-cli.exe"), WORD_SHA),
+            (root.join("Bundles/gridcraft-cli.exe"), GRID_SHA),
+        ];
+        for (path, pinned) in files {
+            let meta = fs::symlink_metadata(&path).expect("accepted worker metadata");
+            assert!(meta.is_file() && !meta.file_type().is_symlink());
+            assert!(meta.len() > 0 && meta.len() < 200_000_000);
+            let worker = fs::read(&path).expect("accepted signed worker bytes");
+            assert_eq!(
+                hex_digest(&worker),
+                pinned,
+                "worker payload differs: {}",
+                path.display()
+            );
+            if pinned == BROKER_SHA {
+                let mut tampered_worker = worker;
+                tampered_worker[0] ^= 1;
+                assert_ne!(hex_digest(&tampered_worker), proof.broker_sha256);
+            }
+        }
+        let mut manifest_tamper = manifest.clone();
+        manifest_tamper[0] ^= 1;
+        assert!(verify_catalog(&manifest_tamper, &cms, &cert, PUBLIC_SPKI).is_err());
+        let mut cms_tamper = cms.clone();
+        let last = cms_tamper.len() - 1;
+        cms_tamper[last] ^= 1;
+        assert!(verify_catalog(&manifest, &cms_tamper, &cert, PUBLIC_SPKI).is_err());
+        assert!(verify_catalog(&manifest, &cms, &cert, &"0".repeat(64)).is_err());
+    }
+
     /// Real detached .NET catalog. Only public manifest, CMS and certificate
     /// are used. No token, signing operation, installed module or trust store.
     #[test]
