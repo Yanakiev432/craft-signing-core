@@ -5,7 +5,7 @@
 //! module and its executable bytes BEFORE launching anything.
 //! The Office broker can confirm OPC integrity, NOT eIDAS qualified status.
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, Metadata, OpenOptions},
@@ -56,6 +56,16 @@ pub enum OfficeIntegrity {
     IntegrityPass,
     /// The trusted broker ran, but its Office worker refused integrity PASS.
     IntegrityRejected,
+}
+
+/// A document-specific, explicitly confirmed signing request. This is a
+/// protocol gate, NOT proof of a human gesture: only a trusted native UI may
+/// pass `user_confirmed=true`. It never stores a PIN or private key.
+#[derive(Clone, Debug)]
+pub struct PreparedOfficeSign {
+    snapshot: SavedOfficeSnapshot,
+    destination: PathBuf,
+    certificate_thumbprint: String,
 }
 
 #[derive(Deserialize)]
@@ -198,6 +208,211 @@ pub fn prepare_verify(
             .modified()
             .map_err(|_| "Office timestamp is unavailable")?,
     })
+}
+
+/// Stage a v1 document.sign envelope for an already authenticated broker.
+/// The UI must explicitly confirm this exact source, output and certificate.
+/// Signing is not performed here, and no credential is accessed.
+pub fn prepare_sign(
+    source: &Path,
+    destination: &Path,
+    kind: OfficeKind,
+    unsaved_edits: bool,
+    user_confirmed: bool,
+    certificate_thumbprint: &str,
+    request_id: &str,
+) -> Result<PreparedOfficeSign, String> {
+    if !user_confirmed {
+        return Err("Explicit document-specific confirmation is required before signing".into());
+    }
+    if certificate_thumbprint.len() != 40
+        || !certificate_thumbprint
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit())
+    {
+        return Err("Select an exact 40-digit Windows certificate thumbprint".into());
+    }
+    let snapshot = prepare_verify(source, kind, unsaved_edits, request_id)?;
+    if !destination.is_absolute() {
+        return Err("The signed output needs an absolute local destination".into());
+    }
+    let destination = local_dos_path(destination)?;
+    let parent = destination
+        .parent()
+        .ok_or("Signed output folder is missing")?;
+    refuse_links(parent)?;
+    if !parent.is_dir() {
+        return Err("Signed output folder must already exist".into());
+    }
+    let canonical_parent = local_dos_path(
+        &parent
+            .canonicalize()
+            .map_err(|_| "Cannot resolve signed output folder")?,
+    )?;
+    refuse_links(&canonical_parent)?;
+    let name = destination
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or("Signed output filename is invalid")?;
+    if name.ends_with(['.', ' '])
+        || name
+            .chars()
+            .any(|c| matches!(c, ':' | '<' | '>' | '"' | '|' | '?' | '*') || c.is_control())
+    {
+        return Err("Signed output filename contains an unsupported Windows character".into());
+    }
+    let base = name
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim_end_matches(' ')
+        .to_ascii_uppercase();
+    if matches!(
+        base.as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    ) {
+        return Err("Signed output filename is reserved by Windows".into());
+    }
+    let destination = canonical_parent.join(name);
+    if destination.to_string_lossy().encode_utf16().count() > 1_800 {
+        return Err("Signed output path exceeds the broker limit".into());
+    }
+    if !destination
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case(kind.extension()))
+    {
+        return Err("Signed output format does not match the saved Office document".into());
+    }
+    if destination
+        .to_string_lossy()
+        .eq_ignore_ascii_case(&snapshot.source.to_string_lossy())
+    {
+        return Err("Signing must never replace the source document".into());
+    }
+    if fs::symlink_metadata(&destination).is_ok() {
+        return Err(
+            "Signing must create a new output file; it cannot replace an existing path".into(),
+        );
+    }
+    Ok(PreparedOfficeSign {
+        snapshot,
+        destination,
+        certificate_thumbprint: certificate_thumbprint.to_ascii_uppercase(),
+    })
+}
+
+impl PreparedOfficeSign {
+    pub fn output_path(&self) -> &Path {
+        &self.destination
+    }
+
+    /// Revalidate the exact source and absence of output before dispatch.
+    pub fn unchanged(&self) -> Result<(), String> {
+        self.snapshot.unchanged()?;
+        refuse_links(self.destination.parent().ok_or("Output folder missing")?)?;
+        if fs::symlink_metadata(&self.destination).is_ok() {
+            return Err("Signed output destination became occupied".into());
+        }
+        Ok(())
+    }
+
+    /// No arbitrary CLI path, embedded secret or certificate private key.
+    /// The current broker wire format cannot negotiate additional-signature
+    /// policy; native UI must not claim such a preference is honored yet.
+    pub fn json_request(&self) -> Result<Vec<u8>, String> {
+        self.unchanged()?;
+        let bytes = serde_json::to_vec(&json!({
+            "protocolMajor":PROTOCOL,
+            "requestId":self.snapshot.request_id,
+            "action":"document.sign",
+            "document":{
+                "kind":self.snapshot.kind.extension(),
+                "sourcePath":self.snapshot.source.to_str().ok_or("Non-Unicode Office source")?,
+                "sha256AtDispatch":self.snapshot.sha256,
+                "saved":true,
+                "dirty":false,
+                "outputPath":self.destination.to_str().ok_or("Non-Unicode Office destination")?,
+                "certificateThumbprint":self.certificate_thumbprint,
+                "userApproved":true
+            }
+        }))
+        .map_err(|_| "Cannot encode signing request")?;
+        if bytes.len() > MAX_REQUEST_BYTES {
+            return Err("Signing request exceeds the IPC size limit".into());
+        }
+        Ok(bytes)
+    }
+
+    /// A broker SUCCESS is never enough: validate response binding, source
+    /// freshness and independently verify the newly created OPC signature.
+    /// This is an integrity verdict only, not QES or certificate trust.
+    pub fn checked_sign_reply(
+        &self,
+        output: &[u8],
+        process_success: bool,
+    ) -> Result<PathBuf, String> {
+        if output.is_empty() || output.len() > MAX_RESPONSE_BYTES {
+            return Err("Signed broker reply size is invalid".into());
+        }
+        let reply: BrokerReply = serde_json::from_slice(output)
+            .map_err(|_| "Malformed or ambiguous signed broker reply")?;
+        if reply.protocol_major != PROTOCOL
+            || reply.request_id != self.snapshot.request_id
+            || reply.document_kind.as_deref() != Some(self.snapshot.kind.extension())
+            || reply.status != "ok"
+            || reply.code != "SIGNATURE_CREATED"
+            || reply.worker_exit_code != Some(0)
+            || !process_success
+            || reply.qualified_eidas_status_assessed.unwrap_or(false)
+            || reply.pdf_evidence.is_some()
+            || reply.pdf_verification_configured.is_some()
+            || reply.message.len() > 1024
+        {
+            return Err("Broker did not prove successful document-specific Office signing".into());
+        }
+        self.snapshot.unchanged()?;
+        refuse_links(&self.destination)?;
+        let metadata = fs::metadata(&self.destination)
+            .map_err(|_| "Broker did not create the claimed signed output")?;
+        if !metadata.is_file() || !(1..=MAX_OFFICE_BYTES).contains(&metadata.len()) {
+            return Err("Signed Office output is missing or exceeds the size limit".into());
+        }
+        let (before_metadata, before_digest) = checked_file(&self.destination)?;
+        let count = crate::opc_native::verify_opc_inprocess(&self.destination)?;
+        if count == 0 {
+            return Err("Office output does not contain a valid signature".into());
+        }
+        let (after_metadata, after_digest) = checked_file(&self.destination)?;
+        if before_digest != after_digest
+            || before_metadata.len() != after_metadata.len()
+            || before_metadata.modified().ok() != after_metadata.modified().ok()
+        {
+            return Err("Signed output changed during independent OPC verification".into());
+        }
+        self.snapshot.unchanged()?;
+        Ok(self.destination.clone())
+    }
 }
 
 impl SavedOfficeSnapshot {
@@ -351,11 +566,9 @@ mod tests {
         );
         fs::write(&file, b"PK\x03\x04modified bytes").expect("mutate disposable fixture");
         assert!(request.unchanged().is_err());
-        assert!(
-            request
-                .checked_reply(&response("INTEGRITY_PASS", "ok", 0, false), true)
-                .is_err()
-        );
+        assert!(request
+            .checked_reply(&response("INTEGRITY_PASS", "ok", 0, false), true)
+            .is_err());
         let _ = fs::remove_file(file);
     }
 
@@ -369,14 +582,12 @@ mod tests {
         assert_eq!(request["document"]["kind"], "xlsx");
         let mut reply: Value = serde_json::from_slice(&response("INTEGRITY_PASS", "ok", 0, false))
             .expect("decode broker response");
-        assert!(
-            snapshot
-                .checked_reply(
-                    &serde_json::to_vec(&reply).expect("wrong DOCX response"),
-                    true
-                )
-                .is_err()
-        );
+        assert!(snapshot
+            .checked_reply(
+                &serde_json::to_vec(&reply).expect("wrong DOCX response"),
+                true
+            )
+            .is_err());
         reply["documentKind"] = json!("xlsx");
         assert_eq!(
             snapshot.checked_reply(
@@ -393,14 +604,12 @@ mod tests {
             snapshot.unchanged().is_err(),
             "must detect same-length edits"
         );
-        assert!(
-            snapshot
-                .checked_reply(
-                    &serde_json::to_vec(&reply).expect("stale XLSX response"),
-                    true
-                )
-                .is_err()
-        );
+        assert!(snapshot
+            .checked_reply(
+                &serde_json::to_vec(&reply).expect("stale XLSX response"),
+                true
+            )
+            .is_err());
         let _ = fs::remove_file(file);
     }
     #[test]
@@ -419,26 +628,18 @@ mod tests {
     fn reject_fake_office_qes_and_broker_mismatch() {
         let file = fixture(OfficeKind::Docx);
         let request = prepare_verify(&file, OfficeKind::Docx, false, ID).expect("saved source");
-        assert!(
-            request
-                .checked_reply(&response("INTEGRITY_PASS", "ok", 0, true), true)
-                .is_err()
-        );
-        assert!(
-            request
-                .checked_reply(&response("INTEGRITY_PASS", "ok", 0, false), false)
-                .is_err()
-        );
-        assert!(
-            request
-                .checked_reply(&response("PDF_QES_PASS", "ok", 0, false), true)
-                .is_err()
-        );
-        assert!(
-            request
-                .checked_reply(&response("INTEGRITY_PASS", "rejected", 1, false), false)
-                .is_err()
-        );
+        assert!(request
+            .checked_reply(&response("INTEGRITY_PASS", "ok", 0, true), true)
+            .is_err());
+        assert!(request
+            .checked_reply(&response("INTEGRITY_PASS", "ok", 0, false), false)
+            .is_err());
+        assert!(request
+            .checked_reply(&response("PDF_QES_PASS", "ok", 0, false), true)
+            .is_err());
+        assert!(request
+            .checked_reply(&response("INTEGRITY_PASS", "rejected", 1, false), false)
+            .is_err());
         assert_eq!(
             request.checked_reply(&response("INTEGRITY_REJECTED", "rejected", 1, false), false),
             Ok(OfficeIntegrity::IntegrityRejected)
@@ -446,15 +647,187 @@ mod tests {
         let mut wrong: Value = serde_json::from_slice(&response("INTEGRITY_PASS", "ok", 0, false))
             .expect("decode fixture");
         wrong["requestId"] = json!("00000000-0000-4000-8000-000000000000");
-        assert!(
-            request
-                .checked_reply(&serde_json::to_vec(&wrong).expect("encode"), true)
-                .is_err()
-        );
+        assert!(request
+            .checked_reply(&serde_json::to_vec(&wrong).expect("encode"), true)
+            .is_err());
         let duplicate =
             format!("{{\"protocolMajor\":1,\"protocolMajor\":1,\"requestId\":\"{ID}\"}}");
         assert!(request.checked_reply(duplicate.as_bytes(), true).is_err());
         let _ = fs::remove_file(file);
+    }
+
+    const SYNTHETIC_THUMBPRINT: &str = "0123456789ABCDEF0123456789ABCDEF01234567";
+
+    fn signed_copy_path(file: &Path) -> PathBuf {
+        file.with_file_name(format!(
+            "{}-signed.{}",
+            file.file_stem().unwrap().to_string_lossy(),
+            file.extension().unwrap().to_string_lossy()
+        ))
+    }
+
+    #[test]
+    fn sign_requires_explicit_per_document_consent_and_exact_certificate() {
+        let source = fixture(OfficeKind::Docx);
+        let dest = signed_copy_path(&source);
+        assert!(prepare_sign(
+            &source,
+            &dest,
+            OfficeKind::Docx,
+            false,
+            false,
+            SYNTHETIC_THUMBPRINT,
+            ID
+        )
+        .unwrap_err()
+        .contains("confirmation"));
+        for thumb in ["", "1234", "0123456789ABCDEF0123456789ABCDEF0123456Z"] {
+            assert!(
+                prepare_sign(&source, &dest, OfficeKind::Docx, false, true, thumb, ID).is_err()
+            );
+        }
+        assert!(prepare_sign(
+            &source,
+            &dest,
+            OfficeKind::Docx,
+            true,
+            true,
+            SYNTHETIC_THUMBPRINT,
+            ID
+        )
+        .is_err());
+        assert!(prepare_sign(
+            &source,
+            &dest,
+            OfficeKind::Xlsx,
+            false,
+            true,
+            SYNTHETIC_THUMBPRINT,
+            ID
+        )
+        .is_err());
+        assert!(prepare_sign(
+            &source,
+            &source,
+            OfficeKind::Docx,
+            false,
+            true,
+            SYNTHETIC_THUMBPRINT,
+            ID
+        )
+        .is_err());
+        assert!(prepare_sign(
+            &source,
+            Path::new("relative-signed.docx"),
+            OfficeKind::Docx,
+            false,
+            true,
+            SYNTHETIC_THUMBPRINT,
+            ID
+        )
+        .is_err());
+        assert!(prepare_sign(
+            &source,
+            &dest.with_extension("pdf"),
+            OfficeKind::Docx,
+            false,
+            true,
+            SYNTHETIC_THUMBPRINT,
+            ID
+        )
+        .is_err());
+        fs::write(&dest, b"do not overwrite").unwrap();
+        assert!(prepare_sign(
+            &source,
+            &dest,
+            OfficeKind::Docx,
+            false,
+            true,
+            SYNTHETIC_THUMBPRINT,
+            ID
+        )
+        .is_err());
+        assert_eq!(fs::read(&dest).unwrap(), b"do not overwrite");
+        fs::remove_file(&dest).unwrap();
+        let _ = fs::remove_file(source);
+    }
+
+    #[test]
+    fn sign_ipc_is_bound_to_saved_bytes_destination_and_selected_thumbprint() {
+        for kind in [OfficeKind::Docx, OfficeKind::Xlsx] {
+            let source = fixture(kind);
+            let dest = signed_copy_path(&source);
+            let sign = prepare_sign(&source, &dest, kind, false, true, SYNTHETIC_THUMBPRINT, ID)
+                .expect("prepared with explicit fixture consent");
+            let json: Value = serde_json::from_slice(&sign.json_request().unwrap()).unwrap();
+            assert_eq!(json["action"], "document.sign");
+            assert_eq!(json["document"]["kind"], kind.extension());
+            assert_eq!(json["document"]["userApproved"], true);
+            assert_eq!(
+                json["document"]["certificateThumbprint"],
+                SYNTHETIC_THUMBPRINT
+            );
+            assert_eq!(
+                json["document"]["outputPath"],
+                dest.to_string_lossy().as_ref()
+            );
+            assert_eq!(json["document"]["sha256AtDispatch"], sign.snapshot.sha256());
+            assert!(json.to_string().len() < MAX_REQUEST_BYTES);
+            fs::write(&dest, b"preexisting race").unwrap();
+            assert!(sign.unchanged().is_err());
+            assert!(sign.json_request().is_err());
+            fs::remove_file(&dest).unwrap();
+            fs::write(&source, b"PK\\x03\\x04source changed").unwrap();
+            assert!(sign.unchanged().is_err());
+            let _ = fs::remove_file(source);
+        }
+    }
+
+    #[test]
+    fn fake_sign_success_never_passes_without_independent_opc_integrity() {
+        let source = fixture(OfficeKind::Docx);
+        let dest = signed_copy_path(&source);
+        let sign = prepare_sign(
+            &source,
+            &dest,
+            OfficeKind::Docx,
+            false,
+            true,
+            SYNTHETIC_THUMBPRINT,
+            ID,
+        )
+        .unwrap();
+        let reply = serde_json::to_vec(&json!({
+            "protocolMajor":1,
+            "requestId":ID,
+            "status":"ok",
+            "code":"SIGNATURE_CREATED",
+            "message":"synthetic only",
+            "documentKind":"docx",
+            "workerExitCode":0,
+            "qualifiedEidasStatusAssessed":false
+        }))
+        .unwrap();
+        assert!(sign.checked_sign_reply(&reply, false).is_err());
+        assert!(
+            sign.checked_sign_reply(&reply, true).is_err(),
+            "a forged broker reply cannot create a signed document"
+        );
+        fs::write(&dest, b"PK\\x03\\x04unsigned synthetic output").unwrap();
+        assert!(
+            sign.checked_sign_reply(&reply, true).is_err(),
+            "even existing output needs independently validated OPC signatures"
+        );
+        let mut fake_qes: Value = serde_json::from_slice(&reply).unwrap();
+        fake_qes["qualifiedEidasStatusAssessed"] = json!(true);
+        assert!(sign
+            .checked_sign_reply(&serde_json::to_vec(&fake_qes).unwrap(), true)
+            .is_err());
+        assert!(sign
+            .checked_sign_reply(br#"{"status":"ok","status":"ok"}"#, true)
+            .is_err());
+        let _ = fs::remove_file(dest);
+        let _ = fs::remove_file(source);
     }
 
     /// No real module may be installed or approved for this opt-in IPC QA.
