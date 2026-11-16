@@ -20,7 +20,7 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const MAX_REPLY: usize = 32_768;
 const VERIFY_TIMEOUT: Duration = Duration::from_secs(90);
 
-fn new_request_uuid() -> Result<String, String> {
+pub(super) fn new_request_uuid() -> Result<String, String> {
     let mut random = [0_u8; 16];
     getrandom::fill(&mut random).map_err(|_| "Cannot obtain a secure broker request ID")?;
     random[6] = (random[6] & 0x0F) | 0x40;

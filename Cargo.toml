@@ -14,6 +14,7 @@ rustls-cng = { version = "0.7.1", default-features = false }
 cms = { version = "0.2.3", default-features = false, features = ["std"] }
 directories = "6"
 getrandom = "0.4"
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
 der = { version = "0.7.10" }
 rsa = { version = "=0.10.0", default-features = false, features = ["std", "encoding", "pkcs1v15"] }
 sha2 = "0.10"

@@ -8,6 +8,8 @@ pub mod signed_module;
 pub mod installed_broker;
 #[cfg(windows)]
 pub mod office_host;
+#[cfg(windows)]
+pub mod office_host_sign;
 pub mod format_contract;
 pub mod office_appearance;
 #[cfg(windows)]
