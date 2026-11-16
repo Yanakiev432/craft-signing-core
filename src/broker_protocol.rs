@@ -58,6 +58,15 @@ pub enum OfficeIntegrity {
     IntegrityRejected,
 }
 
+/// The native UI must intentionally choose a policy for each signing request.
+/// A selected certificate and a boolean on the wire are not proof of human consent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OfficeSignChoice {
+    Unconfirmed,
+    AllowAdditional,
+    RestrictAdditional,
+}
+
 /// A document-specific, explicitly confirmed signing request. This is a
 /// protocol gate, NOT proof of a human gesture: only a trusted native UI may
 /// pass `user_confirmed=true`. It never stores a PIN or private key.
@@ -218,12 +227,21 @@ pub fn prepare_sign(
     destination: &Path,
     kind: OfficeKind,
     unsaved_edits: bool,
-    user_confirmed: bool,
+    choice: OfficeSignChoice,
     certificate_thumbprint: &str,
     request_id: &str,
 ) -> Result<PreparedOfficeSign, String> {
-    if !user_confirmed {
-        return Err("Explicit document-specific confirmation is required before signing".into());
+    match choice {
+        OfficeSignChoice::Unconfirmed => {
+            return Err("Explicit document-specific confirmation is required before signing".into())
+        }
+        OfficeSignChoice::RestrictAdditional => {
+            return Err(
+                "Restricting additional Office signatures is unsupported; no signing attempted"
+                    .into(),
+            )
+        }
+        OfficeSignChoice::AllowAdditional => {}
     }
     if certificate_thumbprint.len() != 40
         || !certificate_thumbprint
@@ -354,7 +372,8 @@ impl PreparedOfficeSign {
                 "dirty":false,
                 "outputPath":self.destination.to_str().ok_or("Non-Unicode Office destination")?,
                 "certificateThumbprint":self.certificate_thumbprint,
-                "userApproved":true
+                "userApproved":true,
+                "allowAdditionalSignatures":true
             }
         }))
         .map_err(|_| "Cannot encode signing request")?;
@@ -675,23 +694,41 @@ mod tests {
             &dest,
             OfficeKind::Docx,
             false,
-            false,
+            OfficeSignChoice::Unconfirmed,
             SYNTHETIC_THUMBPRINT,
             ID
         )
         .unwrap_err()
         .contains("confirmation"));
+        assert!(prepare_sign(
+            &source,
+            &dest,
+            OfficeKind::Docx,
+            false,
+            OfficeSignChoice::RestrictAdditional,
+            SYNTHETIC_THUMBPRINT,
+            ID
+        )
+        .unwrap_err()
+        .contains("unsupported"));
         for thumb in ["", "1234", "0123456789ABCDEF0123456789ABCDEF0123456Z"] {
-            assert!(
-                prepare_sign(&source, &dest, OfficeKind::Docx, false, true, thumb, ID).is_err()
-            );
+            assert!(prepare_sign(
+                &source,
+                &dest,
+                OfficeKind::Docx,
+                false,
+                OfficeSignChoice::AllowAdditional,
+                thumb,
+                ID
+            )
+            .is_err());
         }
         assert!(prepare_sign(
             &source,
             &dest,
             OfficeKind::Docx,
             true,
-            true,
+            OfficeSignChoice::AllowAdditional,
             SYNTHETIC_THUMBPRINT,
             ID
         )
@@ -701,7 +738,7 @@ mod tests {
             &dest,
             OfficeKind::Xlsx,
             false,
-            true,
+            OfficeSignChoice::AllowAdditional,
             SYNTHETIC_THUMBPRINT,
             ID
         )
@@ -711,7 +748,7 @@ mod tests {
             &source,
             OfficeKind::Docx,
             false,
-            true,
+            OfficeSignChoice::AllowAdditional,
             SYNTHETIC_THUMBPRINT,
             ID
         )
@@ -721,7 +758,7 @@ mod tests {
             Path::new("relative-signed.docx"),
             OfficeKind::Docx,
             false,
-            true,
+            OfficeSignChoice::AllowAdditional,
             SYNTHETIC_THUMBPRINT,
             ID
         )
@@ -731,7 +768,7 @@ mod tests {
             &dest.with_extension("pdf"),
             OfficeKind::Docx,
             false,
-            true,
+            OfficeSignChoice::AllowAdditional,
             SYNTHETIC_THUMBPRINT,
             ID
         )
@@ -742,7 +779,7 @@ mod tests {
             &dest,
             OfficeKind::Docx,
             false,
-            true,
+            OfficeSignChoice::AllowAdditional,
             SYNTHETIC_THUMBPRINT,
             ID
         )
@@ -757,12 +794,21 @@ mod tests {
         for kind in [OfficeKind::Docx, OfficeKind::Xlsx] {
             let source = fixture(kind);
             let dest = signed_copy_path(&source);
-            let sign = prepare_sign(&source, &dest, kind, false, true, SYNTHETIC_THUMBPRINT, ID)
-                .expect("prepared with explicit fixture consent");
+            let sign = prepare_sign(
+                &source,
+                &dest,
+                kind,
+                false,
+                OfficeSignChoice::AllowAdditional,
+                SYNTHETIC_THUMBPRINT,
+                ID,
+            )
+            .expect("prepared with explicit fixture consent");
             let json: Value = serde_json::from_slice(&sign.json_request().unwrap()).unwrap();
             assert_eq!(json["action"], "document.sign");
             assert_eq!(json["document"]["kind"], kind.extension());
             assert_eq!(json["document"]["userApproved"], true);
+            assert_eq!(json["document"]["allowAdditionalSignatures"], true);
             assert_eq!(
                 json["document"]["certificateThumbprint"],
                 SYNTHETIC_THUMBPRINT
@@ -792,7 +838,7 @@ mod tests {
             &dest,
             OfficeKind::Docx,
             false,
-            true,
+            OfficeSignChoice::AllowAdditional,
             SYNTHETIC_THUMBPRINT,
             ID,
         )
