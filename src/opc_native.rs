@@ -11,7 +11,7 @@ use std::{
 static NEXT_OPC_STAGE: AtomicU64 = AtomicU64::new(0);
 
 unsafe extern "C" {
-    fn craft_opc_verify_inprocess(source: *const u16, count: *mut i32) -> i32;
+    fn craft_opc_verify_report(source: *const u16, count: *mut i32, stage: *mut i32) -> i32;
     fn craft_opc_sign_inprocess(source: *const u16, dest: *const u16, sha1: *const u16) -> i32;
 }
 fn wide(s: &OsStr) -> Vec<u16> {
@@ -24,10 +24,56 @@ fn error(stage: &str, hr: i32) -> String {
     )
 }
 
-/// Validates signed XML and covered OPC references without starting a shell.
-/// Package-wide OPC part coverage is enforced by the native implementation.
-/// A successful result does not establish certificate trust or eIDAS QES.
-pub fn verify_opc_inprocess(path: &Path) -> Result<usize, String> {
+/// Stage at which strict OPC verification stopped; not a legal trust verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OpcVerifyStage {
+    PackageLoad,
+    SignatureEnumeration,
+    SignatureValidation,
+    PartCoverage,
+    NoSignature,
+    StrictPass,
+    Unknown,
+}
+
+/// Whole-document strict policy report. Earlier successful signatures do not
+/// imply all signatures passed. HRESULT preserves the original native failure.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct OpcVerificationReport {
+    pub stage: OpcVerifyStage,
+    pub hresult: u32,
+    pub verified_signatures: usize,
+    pub strict_pass: bool,
+    pub certificate_trust_assessed: bool,
+    pub revocation_assessed: bool,
+    pub qes_assessed: bool,
+}
+
+fn report_from_native(hr: i32, count: i32, stage: i32) -> OpcVerificationReport {
+    let stage = match stage {
+        0 => OpcVerifyStage::PackageLoad,
+        1 => OpcVerifyStage::SignatureEnumeration,
+        2 => OpcVerifyStage::SignatureValidation,
+        3 => OpcVerifyStage::PartCoverage,
+        4 => OpcVerifyStage::NoSignature,
+        5 => OpcVerifyStage::StrictPass,
+        _ => OpcVerifyStage::Unknown,
+    };
+    let strict_pass = hr == 0 && count > 0 && stage == OpcVerifyStage::StrictPass;
+    OpcVerificationReport {
+        stage,
+        hresult: hr as u32,
+        verified_signatures: if strict_pass { count as usize } else { 0 },
+        strict_pass,
+        certificate_trust_assessed: false,
+        revocation_assessed: false,
+        qes_assessed: false,
+    }
+}
+
+/// Detailed read-only report. No trust or QES is inferred from native OPC.
+pub fn inspect_opc_inprocess(path: &Path) -> Result<OpcVerificationReport, String> {
     let absolute = path
         .canonicalize()
         .map_err(|_| "source file does not exist".to_string())?;
@@ -36,11 +82,22 @@ pub fn verify_opc_inprocess(path: &Path) -> Result<usize, String> {
     }
     let source = wide(absolute.as_os_str());
     let mut count = 0i32;
-    let hr = unsafe { craft_opc_verify_inprocess(source.as_ptr(), &mut count) };
-    if hr < 0 || count <= 0 {
-        return Err(error("native OPC verification", hr));
+    let mut stage = -1i32;
+    let hr = unsafe { craft_opc_verify_report(source.as_ptr(), &mut count, &mut stage) };
+    Ok(report_from_native(hr, count, stage))
+}
+
+/// Strict compatibility wrapper: only complete native verification is accepted.
+pub fn verify_opc_inprocess(path: &Path) -> Result<usize, String> {
+    let report = inspect_opc_inprocess(path)?;
+    if !report.strict_pass {
+        return Err(format!(
+            "{}; stage={:?}",
+            error("native OPC verification", report.hresult as i32),
+            report.stage
+        ));
     }
-    Ok(count as usize)
+    Ok(report.verified_signatures)
 }
 
 /// Signs a new DOCX/XLSX with explicit CurrentUser/My SHA1 certificate thumbprint.
@@ -124,6 +181,18 @@ pub fn sign_opc_inprocess(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn stage_report_never_grants_partial_or_unknown_success() {
+        for (hr, count, stage) in [(0, 1, 3), (0, 1, 99), (-1, 1, 5), (0, 0, 5), (1, 1, 5)] {
+            let r = report_from_native(hr, count, stage);
+            assert!(!r.strict_pass);
+            assert_eq!(r.verified_signatures, 0);
+            assert!(!r.certificate_trust_assessed && !r.revocation_assessed && !r.qes_assessed);
+        }
+        let r = report_from_native(0, 2, 5);
+        assert!(r.strict_pass);
+        assert_eq!(r.verified_signatures, 2);
+    }
     #[test]
     fn no_implicit_identity_non_office_or_missing_file() {
         assert!(sign_opc_inprocess(Path::new("missing.docx"), Path::new("out.docx"), "").is_err());

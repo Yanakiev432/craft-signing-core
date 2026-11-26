@@ -76,7 +76,10 @@ HRESULT append_relationships(IOpcSignatureRelationshipReferenceSet* refs, IOpcUr
                       selectors.Get(),OPC_CANONICALIZATION_C14N,&signedRelation);
 }
 bool signature_metadata_part(IOpcPart* part);
-HRESULT crypto_verify(IOpcPackage* package, IOpcDigitalSignatureManager* manager, int* checked);
+enum OpcVerifyStage : int { PackageLoad=0, SignatureEnumeration=1, SignatureValidation=2,
+  PartCoverage=3, NoSignature=4, StrictPass=5 };
+HRESULT crypto_verify(IOpcPackage* package, IOpcDigitalSignatureManager* manager, int* checked,
+                      int* stage=nullptr);
 HRESULT sign_parts(IOpcFactory* factory,IOpcPackage* package,IOpcSigningOptions* options) {
   ComPtr<IOpcSignaturePartReferenceSet> partRefs;
   ComPtr<IOpcSignatureRelationshipReferenceSet> relRefs;
@@ -232,16 +235,20 @@ HRESULT verify_part_coverage(IOpcPackage* package, IOpcDigitalSignatureManager* 
   }
   return FAILED(hr)?hr:S_OK;
 }
-HRESULT crypto_verify(IOpcPackage* package, IOpcDigitalSignatureManager* manager, int* checked) {
+HRESULT crypto_verify(IOpcPackage* package, IOpcDigitalSignatureManager* manager, int* checked,
+                      int* stage) {
+  if(stage) *stage=SignatureEnumeration;
   ComPtr<IOpcDigitalSignatureEnumerator> en;
   HRESULT hr=manager->GetSignatureEnumerator(&en);
   if(FAILED(hr)) return hr;
   BOOL more=FALSE;
   int valid=0;
   while(SUCCEEDED(hr=en->MoveNext(&more)) && more) {
+    if(stage) *stage=SignatureEnumeration;
     ComPtr<IOpcDigitalSignature> sig;
     hr=en->GetCurrent(&sig);
     if(FAILED(hr)) return hr;
+    if(stage) *stage=SignatureValidation;
     ComPtr<IOpcCertificateEnumerator> certs;
     hr=sig->GetCertificateEnumerator(&certs);
     if(FAILED(hr)) return hr;
@@ -257,21 +264,26 @@ HRESULT crypto_verify(IOpcPackage* package, IOpcDigitalSignatureManager* manager
     }
     if(FAILED(hr)) return hr;
     if(!thisSigValid) return TRUST_E_BAD_DIGEST;
+    if(stage) *stage=PartCoverage;
     hr=verify_part_coverage(package,manager,sig.Get());
     if(FAILED(hr)) return hr;
     ++valid;
+    if(stage) *stage=SignatureEnumeration;
   }
   if(FAILED(hr)) return hr;
-  if(valid<=0) return TRUST_E_NOSIGNATURE;
+  if(valid<=0) { if(stage) *stage=NoSignature; return TRUST_E_NOSIGNATURE; }
   *checked=valid;
+  if(stage) *stage=StrictPass;
   return S_OK;
 }
 } // namespace
 
-extern "C" __declspec(dllexport) long __cdecl craft_opc_verify_inprocess(
-    const wchar_t* source,int* signaturesChecked) noexcept {
-  if(!absolute_path(source)||!signaturesChecked) return E_INVALIDARG;
+extern "C" __declspec(dllexport) long __cdecl craft_opc_verify_report(
+    const wchar_t* source,int* signaturesChecked,int* stage) noexcept {
+  if(!stage||!signaturesChecked) return E_INVALIDARG;
+  *stage=PackageLoad;
   *signaturesChecked=0;
+  if(!absolute_path(source)) return E_INVALIDARG;
   ComInit com;
   if(FAILED(com.hr)&&com.hr!=RPC_E_CHANGED_MODE) return com.hr;
   ComPtr<IOpcFactory> factory;
@@ -283,7 +295,13 @@ extern "C" __declspec(dllexport) long __cdecl craft_opc_verify_inprocess(
   ComPtr<IOpcDigitalSignatureManager> mgr;
   hr=factory->CreateDigitalSignatureManager(pkg.Get(),&mgr);
   if(FAILED(hr)) return hr;
-  return crypto_verify(pkg.Get(),mgr.Get(),signaturesChecked);
+  return crypto_verify(pkg.Get(),mgr.Get(),signaturesChecked,stage);
+}
+
+extern "C" __declspec(dllexport) long __cdecl craft_opc_verify_inprocess(
+    const wchar_t* source,int* signaturesChecked) noexcept {
+  int stage=PackageLoad;
+  return craft_opc_verify_report(source,signaturesChecked,&stage);
 }
 
 extern "C" __declspec(dllexport) long __cdecl craft_opc_sign_inprocess(
