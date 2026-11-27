@@ -5,7 +5,7 @@
 //! module and its executable bytes BEFORE launching anything.
 //! The Office broker can confirm OPC integrity, NOT eIDAS qualified status.
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, Metadata, OpenOptions},
@@ -58,6 +58,25 @@ pub enum OfficeIntegrity {
     IntegrityRejected,
 }
 
+/// Authenticated broker verification result; legacy modules have no report.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OfficeVerification {
+    pub integrity: OfficeIntegrity,
+    pub report: Option<crate::opc_native::OpcVerificationReport>,
+}
+impl OfficeVerification {
+    pub fn user_message(&self) -> String {
+        match &self.report {
+            Some(r) => format!("OPC {:?} (HRESULT 0x{:08X}); strict integrity: {}; certificate trust, revocation and eIDAS QES not assessed.",
+                r.stage, r.hresult, if r.strict_pass {"PASS"} else {"REJECTED"}),
+            None => match self.integrity {
+                OfficeIntegrity::IntegrityPass => "OPC integrity PASS; certificate trust, revocation and eIDAS QES not assessed (legacy broker).".into(),
+                OfficeIntegrity::IntegrityRejected => "Legacy broker rejected OPC integrity; detailed diagnostic unavailable.".into(),
+            },
+        }
+    }
+}
+
 /// The native UI must intentionally choose a policy for each signing request.
 /// A selected certificate and a boolean on the wire are not proof of human consent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -90,6 +109,7 @@ struct BrokerReply {
     qualified_eidas_status_assessed: Option<bool>,
     pdf_evidence: Option<Value>,
     pdf_verification_configured: Option<bool>,
+    office_report: Option<crate::opc_native::OpcVerificationReport>,
 }
 
 fn uuid_d(id: &str) -> bool {
@@ -233,13 +253,13 @@ pub fn prepare_sign(
 ) -> Result<PreparedOfficeSign, String> {
     match choice {
         OfficeSignChoice::Unconfirmed => {
-            return Err("Explicit document-specific confirmation is required before signing".into())
+            return Err("Explicit document-specific confirmation is required before signing".into());
         }
         OfficeSignChoice::RestrictAdditional => {
             return Err(
                 "Restricting additional Office signatures is unsupported; no signing attempted"
                     .into(),
-            )
+            );
         }
         OfficeSignChoice::AllowAdditional => {}
     }
@@ -406,6 +426,7 @@ impl PreparedOfficeSign {
             || reply.qualified_eidas_status_assessed.unwrap_or(false)
             || reply.pdf_evidence.is_some()
             || reply.pdf_verification_configured.is_some()
+            || reply.office_report.is_some()
             || reply.message.len() > 1024
         {
             return Err("Broker did not prove successful document-specific Office signing".into());
@@ -458,10 +479,14 @@ impl SavedOfficeSnapshot {
     /// Strictly the broker's v1 document.verify shape. No userApproved,
     /// certificate thumbprint, outputPath, signing action or PIN.
     pub fn json_request(&self) -> Result<Vec<u8>, String> {
+        self.json_verification_request(false)
+    }
+
+    pub fn json_verification_request(&self, report: bool) -> Result<Vec<u8>, String> {
         let payload = serde_json::to_vec(&json!({
             "protocolMajor":PROTOCOL,
             "requestId":self.request_id,
-            "action":"document.verify",
+            "action":if report {"document.verify.report"} else {"document.verify"},
             "document":{
                 "kind":self.kind.extension(),
                 "sourcePath":self.source.to_str().ok_or("Non-Unicode Office path is unsupported")?,
@@ -485,6 +510,17 @@ impl SavedOfficeSnapshot {
         output: &[u8],
         exited_successfully: bool,
     ) -> Result<OfficeIntegrity, String> {
+        Ok(self
+            .checked_verification_reply(output, exited_successfully, false)?
+            .integrity)
+    }
+
+    pub fn checked_verification_reply(
+        &self,
+        output: &[u8],
+        exited_successfully: bool,
+        expect_report: bool,
+    ) -> Result<OfficeVerification, String> {
         if output.is_empty() || output.len() > MAX_RESPONSE_BYTES {
             return Err("Broker response size is invalid".into());
         }
@@ -506,7 +542,33 @@ impl SavedOfficeSnapshot {
         {
             return Err("Broker response contradicts Office verification request".into());
         }
-        let outcome =
+        let outcome = if expect_report {
+            let report = reply
+                .office_report
+                .as_ref()
+                .ok_or("Missing Office diagnostic report")?;
+            if !report.is_consistent()
+                || reply.worker_exit_code != Some(0)
+                || reply.qualified_eidas_status_assessed != Some(false)
+            {
+                return Err("Inconsistent Office diagnostic report".into());
+            }
+            match (
+                reply.status.as_str(),
+                reply.code.as_str(),
+                exited_successfully,
+                report.strict_pass,
+            ) {
+                ("ok", "INTEGRITY_PASS", true, true) => OfficeIntegrity::IntegrityPass,
+                ("rejected", "INTEGRITY_REJECTED", false, false) => {
+                    OfficeIntegrity::IntegrityRejected
+                }
+                _ => return Err("Diagnostic report contradicts broker outcome".into()),
+            }
+        } else {
+            if reply.office_report.is_some() {
+                return Err("Unexpected Office diagnostic report".into());
+            }
             match (
                 reply.status.as_str(),
                 reply.code.as_str(),
@@ -521,9 +583,13 @@ impl SavedOfficeSnapshot {
                     "Broker response status, exit code or integrity classification is inconsistent"
                         .into(),
                 ),
-            };
+            }
+        };
         self.unchanged()?;
-        Ok(outcome)
+        Ok(OfficeVerification {
+            integrity: outcome,
+            report: reply.office_report,
+        })
     }
 }
 
@@ -564,6 +630,67 @@ mod tests {
     }
 
     #[test]
+    fn report_transport_is_opt_in_and_fail_closed() {
+        let file = fixture(OfficeKind::Docx);
+        let req = prepare_verify(&file, OfficeKind::Docx, false, ID).unwrap();
+        let wire: Value =
+            serde_json::from_slice(&req.json_verification_request(true).unwrap()).unwrap();
+        assert_eq!(wire["action"], "document.verify.report");
+        let mut reply: Value =
+            serde_json::from_slice(&response("INTEGRITY_REJECTED", "rejected", 0, false)).unwrap();
+        reply["officeReport"] = json!({"stage":"part_coverage","hresult":2148098064u32,"verified_signatures":0,"strict_pass":false,"certificate_trust_assessed":false,"revocation_assessed":false,"qes_assessed":false});
+        let bytes = |v: &Value| serde_json::to_vec(v).unwrap();
+        assert_eq!(
+            req.checked_verification_reply(&bytes(&reply), false, true)
+                .unwrap()
+                .integrity,
+            OfficeIntegrity::IntegrityRejected
+        );
+        assert!(req.checked_reply(&bytes(&reply), false).is_err());
+        assert!(
+            req.checked_verification_reply(&bytes(&reply), true, true)
+                .is_err()
+        );
+        let mut bad = reply.clone();
+        bad["officeReport"]["strict_pass"] = json!(true);
+        assert!(
+            req.checked_verification_reply(&bytes(&bad), false, true)
+                .is_err()
+        );
+        bad = reply.clone();
+        bad["officeReport"]["qes_assessed"] = json!(true);
+        assert!(
+            req.checked_verification_reply(&bytes(&bad), false, true)
+                .is_err()
+        );
+        bad = reply.clone();
+        bad["officeReport"]["extra"] = json!(true);
+        assert!(
+            req.checked_verification_reply(&bytes(&bad), false, true)
+                .is_err()
+        );
+        bad = reply.clone();
+        bad.as_object_mut().unwrap().remove("officeReport");
+        assert!(
+            req.checked_verification_reply(&bytes(&bad), false, true)
+                .is_err()
+        );
+        bad = reply.clone();
+        bad["officeReport"]["stage"] = json!("strict_pass");
+        bad["officeReport"]["hresult"] = json!(0);
+        bad["officeReport"]["verified_signatures"] = json!(1);
+        bad["officeReport"]["strict_pass"] = json!(true);
+        bad["status"] = json!("ok");
+        bad["code"] = json!("INTEGRITY_PASS");
+        assert_eq!(
+            req.checked_verification_reply(&bytes(&bad), true, true)
+                .unwrap()
+                .integrity,
+            OfficeIntegrity::IntegrityPass
+        );
+        let _ = fs::remove_file(file);
+    }
+    #[test]
     fn verify_request_is_read_only_and_digest_bound() {
         let file = fixture(OfficeKind::Docx);
         let request = prepare_verify(&file, OfficeKind::Docx, false, ID).expect("saved source");
@@ -585,9 +712,11 @@ mod tests {
         );
         fs::write(&file, b"PK\x03\x04modified bytes").expect("mutate disposable fixture");
         assert!(request.unchanged().is_err());
-        assert!(request
-            .checked_reply(&response("INTEGRITY_PASS", "ok", 0, false), true)
-            .is_err());
+        assert!(
+            request
+                .checked_reply(&response("INTEGRITY_PASS", "ok", 0, false), true)
+                .is_err()
+        );
         let _ = fs::remove_file(file);
     }
 
@@ -601,12 +730,14 @@ mod tests {
         assert_eq!(request["document"]["kind"], "xlsx");
         let mut reply: Value = serde_json::from_slice(&response("INTEGRITY_PASS", "ok", 0, false))
             .expect("decode broker response");
-        assert!(snapshot
-            .checked_reply(
-                &serde_json::to_vec(&reply).expect("wrong DOCX response"),
-                true
-            )
-            .is_err());
+        assert!(
+            snapshot
+                .checked_reply(
+                    &serde_json::to_vec(&reply).expect("wrong DOCX response"),
+                    true
+                )
+                .is_err()
+        );
         reply["documentKind"] = json!("xlsx");
         assert_eq!(
             snapshot.checked_reply(
@@ -623,12 +754,14 @@ mod tests {
             snapshot.unchanged().is_err(),
             "must detect same-length edits"
         );
-        assert!(snapshot
-            .checked_reply(
-                &serde_json::to_vec(&reply).expect("stale XLSX response"),
-                true
-            )
-            .is_err());
+        assert!(
+            snapshot
+                .checked_reply(
+                    &serde_json::to_vec(&reply).expect("stale XLSX response"),
+                    true
+                )
+                .is_err()
+        );
         let _ = fs::remove_file(file);
     }
     #[test]
@@ -647,18 +780,26 @@ mod tests {
     fn reject_fake_office_qes_and_broker_mismatch() {
         let file = fixture(OfficeKind::Docx);
         let request = prepare_verify(&file, OfficeKind::Docx, false, ID).expect("saved source");
-        assert!(request
-            .checked_reply(&response("INTEGRITY_PASS", "ok", 0, true), true)
-            .is_err());
-        assert!(request
-            .checked_reply(&response("INTEGRITY_PASS", "ok", 0, false), false)
-            .is_err());
-        assert!(request
-            .checked_reply(&response("PDF_QES_PASS", "ok", 0, false), true)
-            .is_err());
-        assert!(request
-            .checked_reply(&response("INTEGRITY_PASS", "rejected", 1, false), false)
-            .is_err());
+        assert!(
+            request
+                .checked_reply(&response("INTEGRITY_PASS", "ok", 0, true), true)
+                .is_err()
+        );
+        assert!(
+            request
+                .checked_reply(&response("INTEGRITY_PASS", "ok", 0, false), false)
+                .is_err()
+        );
+        assert!(
+            request
+                .checked_reply(&response("PDF_QES_PASS", "ok", 0, false), true)
+                .is_err()
+        );
+        assert!(
+            request
+                .checked_reply(&response("INTEGRITY_PASS", "rejected", 1, false), false)
+                .is_err()
+        );
         assert_eq!(
             request.checked_reply(&response("INTEGRITY_REJECTED", "rejected", 1, false), false),
             Ok(OfficeIntegrity::IntegrityRejected)
@@ -666,9 +807,11 @@ mod tests {
         let mut wrong: Value = serde_json::from_slice(&response("INTEGRITY_PASS", "ok", 0, false))
             .expect("decode fixture");
         wrong["requestId"] = json!("00000000-0000-4000-8000-000000000000");
-        assert!(request
-            .checked_reply(&serde_json::to_vec(&wrong).expect("encode"), true)
-            .is_err());
+        assert!(
+            request
+                .checked_reply(&serde_json::to_vec(&wrong).expect("encode"), true)
+                .is_err()
+        );
         let duplicate =
             format!("{{\"protocolMajor\":1,\"protocolMajor\":1,\"requestId\":\"{ID}\"}}");
         assert!(request.checked_reply(duplicate.as_bytes(), true).is_err());
@@ -689,101 +832,119 @@ mod tests {
     fn sign_requires_explicit_per_document_consent_and_exact_certificate() {
         let source = fixture(OfficeKind::Docx);
         let dest = signed_copy_path(&source);
-        assert!(prepare_sign(
-            &source,
-            &dest,
-            OfficeKind::Docx,
-            false,
-            OfficeSignChoice::Unconfirmed,
-            SYNTHETIC_THUMBPRINT,
-            ID
-        )
-        .unwrap_err()
-        .contains("confirmation"));
-        assert!(prepare_sign(
-            &source,
-            &dest,
-            OfficeKind::Docx,
-            false,
-            OfficeSignChoice::RestrictAdditional,
-            SYNTHETIC_THUMBPRINT,
-            ID
-        )
-        .unwrap_err()
-        .contains("unsupported"));
+        assert!(
+            prepare_sign(
+                &source,
+                &dest,
+                OfficeKind::Docx,
+                false,
+                OfficeSignChoice::Unconfirmed,
+                SYNTHETIC_THUMBPRINT,
+                ID
+            )
+            .unwrap_err()
+            .contains("confirmation")
+        );
+        assert!(
+            prepare_sign(
+                &source,
+                &dest,
+                OfficeKind::Docx,
+                false,
+                OfficeSignChoice::RestrictAdditional,
+                SYNTHETIC_THUMBPRINT,
+                ID
+            )
+            .unwrap_err()
+            .contains("unsupported")
+        );
         for thumb in ["", "1234", "0123456789ABCDEF0123456789ABCDEF0123456Z"] {
-            assert!(prepare_sign(
+            assert!(
+                prepare_sign(
+                    &source,
+                    &dest,
+                    OfficeKind::Docx,
+                    false,
+                    OfficeSignChoice::AllowAdditional,
+                    thumb,
+                    ID
+                )
+                .is_err()
+            );
+        }
+        assert!(
+            prepare_sign(
+                &source,
+                &dest,
+                OfficeKind::Docx,
+                true,
+                OfficeSignChoice::AllowAdditional,
+                SYNTHETIC_THUMBPRINT,
+                ID
+            )
+            .is_err()
+        );
+        assert!(
+            prepare_sign(
+                &source,
+                &dest,
+                OfficeKind::Xlsx,
+                false,
+                OfficeSignChoice::AllowAdditional,
+                SYNTHETIC_THUMBPRINT,
+                ID
+            )
+            .is_err()
+        );
+        assert!(
+            prepare_sign(
+                &source,
+                &source,
+                OfficeKind::Docx,
+                false,
+                OfficeSignChoice::AllowAdditional,
+                SYNTHETIC_THUMBPRINT,
+                ID
+            )
+            .is_err()
+        );
+        assert!(
+            prepare_sign(
+                &source,
+                Path::new("relative-signed.docx"),
+                OfficeKind::Docx,
+                false,
+                OfficeSignChoice::AllowAdditional,
+                SYNTHETIC_THUMBPRINT,
+                ID
+            )
+            .is_err()
+        );
+        assert!(
+            prepare_sign(
+                &source,
+                &dest.with_extension("pdf"),
+                OfficeKind::Docx,
+                false,
+                OfficeSignChoice::AllowAdditional,
+                SYNTHETIC_THUMBPRINT,
+                ID
+            )
+            .is_err()
+        );
+        fs::write(&dest, b"do not overwrite").unwrap();
+        assert!(
+            prepare_sign(
                 &source,
                 &dest,
                 OfficeKind::Docx,
                 false,
                 OfficeSignChoice::AllowAdditional,
-                thumb,
+                SYNTHETIC_THUMBPRINT,
                 ID
             )
-            .is_err());
-        }
-        assert!(prepare_sign(
-            &source,
-            &dest,
-            OfficeKind::Docx,
-            true,
-            OfficeSignChoice::AllowAdditional,
-            SYNTHETIC_THUMBPRINT,
-            ID
-        )
-        .is_err());
-        assert!(prepare_sign(
-            &source,
-            &dest,
-            OfficeKind::Xlsx,
-            false,
-            OfficeSignChoice::AllowAdditional,
-            SYNTHETIC_THUMBPRINT,
-            ID
-        )
-        .is_err());
-        assert!(prepare_sign(
-            &source,
-            &source,
-            OfficeKind::Docx,
-            false,
-            OfficeSignChoice::AllowAdditional,
-            SYNTHETIC_THUMBPRINT,
-            ID
-        )
-        .is_err());
-        assert!(prepare_sign(
-            &source,
-            Path::new("relative-signed.docx"),
-            OfficeKind::Docx,
-            false,
-            OfficeSignChoice::AllowAdditional,
-            SYNTHETIC_THUMBPRINT,
-            ID
-        )
-        .is_err());
-        assert!(prepare_sign(
-            &source,
-            &dest.with_extension("pdf"),
-            OfficeKind::Docx,
-            false,
-            OfficeSignChoice::AllowAdditional,
-            SYNTHETIC_THUMBPRINT,
-            ID
-        )
-        .is_err());
-        fs::write(&dest, b"do not overwrite").unwrap();
-        assert!(prepare_sign(
-            &source,
-            &dest,
-            OfficeKind::Docx,
-            false,
-            OfficeSignChoice::AllowAdditional,
-            SYNTHETIC_THUMBPRINT,
-            ID
-        )
-        .is_err());
+            .is_err()
+        );
         assert_eq!(fs::read(&dest).unwrap(), b"do not overwrite");
         fs::remove_file(&dest).unwrap();
         let _ = fs::remove_file(source);
@@ -866,12 +1027,14 @@ mod tests {
         );
         let mut fake_qes: Value = serde_json::from_slice(&reply).unwrap();
         fake_qes["qualifiedEidasStatusAssessed"] = json!(true);
-        assert!(sign
-            .checked_sign_reply(&serde_json::to_vec(&fake_qes).unwrap(), true)
-            .is_err());
-        assert!(sign
-            .checked_sign_reply(br#"{"status":"ok","status":"ok"}"#, true)
-            .is_err());
+        assert!(
+            sign.checked_sign_reply(&serde_json::to_vec(&fake_qes).unwrap(), true)
+                .is_err()
+        );
+        assert!(
+            sign.checked_sign_reply(br#"{"status":"ok","status":"ok"}"#, true)
+                .is_err()
+        );
         let _ = fs::remove_file(dest);
         let _ = fs::remove_file(source);
     }

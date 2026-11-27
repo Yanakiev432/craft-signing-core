@@ -4,7 +4,7 @@
 //! This is a synchronous worker function: native GUI callers MUST invoke it
 //! from their own background job, not from the render/UI event thread.
 use crate::{
-    broker_protocol::{OfficeIntegrity, OfficeKind, prepare_verify},
+    broker_protocol::{OfficeIntegrity, OfficeKind, OfficeVerification, prepare_verify},
     installed_broker::resolve_installed_broker,
 };
 use std::{
@@ -57,6 +57,15 @@ pub fn verify_office_via_installed_signer(
     kind: OfficeKind,
     unsaved_edits: bool,
 ) -> Result<OfficeIntegrity, String> {
+    Ok(verify_office_detailed(saved_source, kind, unsaved_edits)?.integrity)
+}
+
+/// Use detailed IPC only for the explicitly reviewed module release; older modules remain compatible.
+pub fn verify_office_detailed(
+    saved_source: &Path,
+    kind: OfficeKind,
+    unsaved_edits: bool,
+) -> Result<OfficeVerification, String> {
     if unsaved_edits {
         return Err("Save Office changes before verifying signatures".into());
     }
@@ -66,7 +75,8 @@ pub fn verify_office_via_installed_signer(
     let trusted = resolve_installed_broker()?;
     let request_id = new_request_uuid()?;
     let snapshot = prepare_verify(saved_source, kind, false, &request_id)?;
-    let input = snapshot.json_request()?;
+    let report = trusted.verified_catalog().module_version == "0.2.4-qa";
+    let input = snapshot.json_verification_request(report)?;
     snapshot.unchanged()?;
 
     let working_directory = trusted
@@ -152,7 +162,7 @@ pub fn verify_office_via_installed_signer(
         .map_err(|_| "Signed broker reader failed")??;
     // The signed broker checks the source hash as well, but the host never
     // reports integrity PASS without independently rehashing exact saved bytes.
-    snapshot.checked_reply(&reply, status.success())
+    snapshot.checked_verification_reply(&reply, status.success(), report)
 }
 
 #[cfg(test)]

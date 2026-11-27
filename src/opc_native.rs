@@ -25,7 +25,7 @@ fn error(stage: &str, hr: i32) -> String {
 }
 
 /// Stage at which strict OPC verification stopped; not a legal trust verdict.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OpcVerifyStage {
     PackageLoad,
@@ -39,7 +39,8 @@ pub enum OpcVerifyStage {
 
 /// Whole-document strict policy report. Earlier successful signatures do not
 /// imply all signatures passed. HRESULT preserves the original native failure.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OpcVerificationReport {
     pub stage: OpcVerifyStage,
     pub hresult: u32,
@@ -50,6 +51,23 @@ pub struct OpcVerificationReport {
     pub qes_assessed: bool,
 }
 
+impl OpcVerificationReport {
+    /// Validate the diagnostic wire contract; this is NOT a trust assessment.
+    pub fn is_consistent(&self) -> bool {
+        if self.certificate_trust_assessed || self.revocation_assessed || self.qes_assessed {
+            return false;
+        }
+        if self.strict_pass {
+            self.stage == OpcVerifyStage::StrictPass
+                && self.hresult == 0
+                && self.verified_signatures > 0
+        } else {
+            self.stage != OpcVerifyStage::StrictPass
+                && self.hresult & 0x8000_0000 != 0
+                && self.verified_signatures == 0
+        }
+    }
+}
 fn report_from_native(hr: i32, count: i32, stage: i32) -> OpcVerificationReport {
     let stage = match stage {
         0 => OpcVerifyStage::PackageLoad,
